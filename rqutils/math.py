@@ -1,4 +1,4 @@
-from typing import Callable, Any
+from typing import Callable, Any, Union
 import sys
 import tempfile
 import numpy as np
@@ -6,12 +6,12 @@ import h5py
 
 def matrix_ufunc(
     op: Callable,
-    mat: Any,
+    mat: 'array_like',
     hermitian: Union[int, bool] = 0,
     with_diagonals: bool = False,
     npmod=np,
     save_errors=False
-) -> 'array':
+) -> 'ndarray':
     """Apply a unitary-invariant unary matrix operator to an array of normal matrices.
     
     The argument `mat` must be an array of normal matrices (in the last two dimensions). This function
