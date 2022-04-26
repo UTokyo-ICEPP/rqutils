@@ -55,28 +55,28 @@ Pauli products
 
 A physical composite system of :math:`s` subsystems is usually better described in terms of a tensor
 product of :math:`s` Hamiltonians each of dimension :math:`n_i (i=1, \dots, s)`, rather than a single
-:math:`N = \prod_{i=1}^{s} n^i`-dimensional Hamiltonian. The natural decomposition of the former would be
-in terms of Pauli :math:`s`-products
+Hamiltonian of :math:`N := \prod_{i=1}^{s} n^i` dimensions. A natural decomposition of the former
+would be in terms of tensor products of :math:`s` Pauli matrices
 
 .. math::
 \Lambda^{n_1 \dots n_s}_{k_1 \dots k_s} = \frac{1}{2^{s-1}} \bigotimes_{i=1}^{s} \lambda^{n_i}_{k_i},
 
 which constitute an orthonormal basis of the space of :math:`N`-dimensional Hermitian matrices with
-normalization
+a rather awkward normalization
 
 .. math::
-\mathrm{tr}(\Lambda^{n_1 \dots n_s}_{k_1 \dots k_s} \Lambda^{n_1 \dots n_s}_{l_1 \dots l_s}) = 2 \prod_i \delta_{k_i, l_i}.
+\mathrm{tr}(\Lambda^{n_1 \dots n_s}_{k_1 \dots k_s} \Lambda^{n_1 \dots n_s}_{l_1 \dots l_s}) = 2 \frac{1}{2^{s-1}} \prod_i \delta_{k_i, l_i}.
 
 The full `s`-body Hamiltonian :math:`H` is decomposed into
 
 .. math::
-H = \sum_{k_1 \dots k_s} \nu_{k_1 \dots k_s} \Lambda^{n}_{k_1 \dots k_s},
+H = \sum_{k_1 \dots k_s} \nu_{k_1 \dots k_s} \Lambda^{n_1 \dots n_s}_{k_1 \dots k_s},
 
 and the component :math:`\nu_{k_1 \dots k_s}` is extracted by
 
 .. math::
 
-\nu_{k_1 \dots k_s} = \frac{1}{2} \mathrm{tr}(\Lambda^n_{k_1 \dots k_s} H).
+\nu_{k_1 \dots k_s} = 2^{s-2} \mathrm{tr}(\Lambda^{n_1 \dots n_s}_{k_1 \dots k_s} H).
 
 
 Dimension truncation
@@ -163,8 +163,10 @@ def paulis(dim: Union[int, Sequence[int]]) -> np.ndarray:
         matrices *= np.sqrt(2. / norm)[:, None, None]
 
         subsystems.append(matrices)
+        
+    num_sub = len(dim)
 
-    if len(dim) == 1:
+    if num_sub == 1:
         return subsystems[0]
     
     else:
@@ -172,12 +174,9 @@ def paulis(dim: Union[int, Sequence[int]]) -> np.ndarray:
         # (d1**2, d1, d1) x (d2**2, d2, d2) -> (d1**2, d2**2, d1*d2, d1*d2)
         #      a   b   c         d   e   f          a      d     be     cf
         # be and cf are reshaped into 1 dimension each
-        
-        num_sub = len(dim)
-        
         chars = string.ascii_letters
         if num_sub * 3 > len(chars):
-            raise NotImplemented('Too many qudits - need an implementation using recursive np.kron')
+            raise NotImplemented('Too many subsystems - need an implementation using recursive np.kron')
 
         indices_in = []
         indices_out = [''] * 3
@@ -198,16 +197,17 @@ def components(
     matrix: 'array_like',
     dim: Optional[Sequence[int]] = None,
     npmod=np
-) -> 'array':
+) -> 'ndarray':
     """Return the Pauli decomposition coefficients :math:`\nu_{k_1 \dots k_n}` of the matrix.
     
     Args:
-        matrix: Matrix to decompose.
+        matrix: Matrix to decompose. The last two dimensions of the array are dotted with the Pauli
+            matrices.
         dim: Subsystem dimensions. The product of subsystem dimensions must match the matrix dimension.
             If None, the matrix is assumed to represent a single system.
         
     Returns:
-        A complex array of shape `(d1**2, d2**2, ...)` where `d1`, `d2`, ... are the subsystem dimensions.
+        A complex array of shape `(..., d1**2, d2**2, ...)` where `d1`, `d2`, ... are the subsystem dimensions.
         
     Raises:
         ValueError: If `prod(dim)` does not match the matrix dimension.
@@ -220,7 +220,35 @@ def components(
         
     basis = paulis(dim)
 
-    return npmod.tensordot(matrix, basis, ((-2, -1), (-1, -2))) / 2.
+    return npmod.tensordot(matrix, basis, ((-2, -1), (-1, -2))) * (2 ** (len(dim) - 2))
+
+
+def compose(
+    components: 'array_like',
+    dim: Optional[Sequence[int]] = None,
+    npmod=np
+) -> 'ndarray':
+    """Compose a matrix from the Pauli components.
+    
+    Args:
+        components: Pauli components of the desired matrix, shape (..., d1**2, d2**2, ...)
+        dim: Subsystem dimensions. If present, last `len(dim)` dimensions of `components`
+            are dotted with the corresponding Pauli matrices.
+        
+    Returns:
+        A complex array of shape `(..., d1*d2*..., d1*d2*...)`.
+    """
+    if dim is None:
+        dim = np.around(np.sqrt(components.shape)).astype(int)
+
+        if npmod is np and not np.allclose(np.square(dim), components.shape):
+            raise ValueError('Components array shape invalid')
+
+    basis = paulis(dim)
+
+    comp_axes = list(range(-len(dim), 0))
+    pauli_axes = list(range(len(dim)))
+    return npmod.tensordot(components, basis, (comp_axes, pauli_axes))
     
     
 def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
@@ -239,7 +267,7 @@ def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
     projector = np.zeros(original_dim ** 2)
     projector[0] = np.sqrt(reduced_dim / original_dim)
     
-    for d in range(reduced_dim + 1, original_dim):
+    for d in range(reduced_dim + 1, original_dim + 1):
         projector[d ** 2 - 1] = np.sqrt(reduced_dim / d / (d - 1))
 
     return projector
@@ -249,7 +277,7 @@ def truncate(
     components: 'array_like',
     reduced_dim: Union[int, Sequence[int]],
     npmod=np
-) -> 'array':
+) -> 'ndarray':
     """Truncate a component array of a matrix into the components for a submatrix.
     
     The component array can have extra dimensions in front (e.g. time axis if this is a time series of components).
@@ -263,8 +291,6 @@ def truncate(
     Returns:
         Components of the submatrix, shape (..., r1**2, r2**2, ...)
     """
-    components = components.copy()
-    
     if npmod is np and isinstance(reduced_dim, int):
         reduced_dim = (reduced_dim,) * len(components.shape)
         
@@ -278,12 +304,10 @@ def truncate(
             raise ValueError(f'Reduced dimensions greater than original dimensions')
             
         if np.allclose(reduced_shape, original_shape):
-            return components
+            return components.copy()
         
     original_dim = npmod.around(npmod.sqrt(original_shape)).astype(int)
 
-    num_pre_dims = len(components.shape) - num_subsystems
-    
     def project_dim(idim, components):
         # Construct a matrix (v, diag([1] * reduced)[1:], diag([0] * truncated))^T 
         projector = l0_projector(reduced_dim[idim], original_dim[idim])
@@ -291,18 +315,25 @@ def truncate(
                                   npmod.zeros(original_dim[idim] ** 2 - reduced_dim[idim] ** 2)))
         projector = npmod.concatenate((projector[None, :], npmod.diag(diag)[1:]), axis=0)
 
-        return npmod.tensordot(projector, components, (1, num_pre_dims + idim))
+        return npmod.tensordot(projector, components, (1, -num_subsystems + idim))
 
     if has_jax and npmod is jnp:
-        components = jax.lax.fori_loop(0, num_subsystems, project_dim, components)
+        def loop_body(idim, components):
+            return jax.lax.cond(reduced_dim[idim] == original_dim[idim],
+                                lambda c: c,
+                                lambda c: project_dim(idim, c),
+                                components)
+        
+        components = jax.lax.fori_loop(0, num_subsystems, loop_body, components)
+        
     else:
         for idim in range(num_subsystems):
-            components = project_dim(idim, components)
+            if reduced_dim[idim] != original_dim[idim]:
+                components = project_dim(idim, components)
 
-    pre_slices = (slice(None),) * num_pre_dims
     slices = tuple(slice(shape) for shape in reduced_shape)
 
-    return components[pre_slices + slices]
+    return components[(...,) + slices]
 
 
 def symmetry(dim: int):
@@ -313,7 +344,7 @@ def symmetry(dim: int):
         
     Returns:
         An 1D integer array with entries -1, 0, 1 depending on whether the corresponding Pauli matrix
-        is antisymmetric, diagonal, or symmetric.
+            is antisymmetric, diagonal, or symmetric.
     """
     
     symmetry = np.zeros(dim ** 2, dtype=int)
