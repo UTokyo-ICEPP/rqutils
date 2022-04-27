@@ -21,9 +21,28 @@ import builtins
 from dataclasses import dataclass
 from enum import Enum
 import numpy as np
-import scipy
-import matplotlib as mpl
-import matplotlib.pyplot as plt
+
+try:
+    import scipy
+except ImportError:
+    has_scipy = False
+else:
+    has_scipy = True
+
+try:
+    import matplotlib as mpl
+    import matplotlib.pyplot as plt
+except ImportError:
+    has_mpl = False
+else:
+    has_mpl = True
+
+    MATPLOTLIB_INLINE_BACKENDS = {
+        "module://ipykernel.pylab.backend_inline",
+        "module://matplotlib_inline.backend_inline",
+        "nbAgg",
+    }
+    
 try:
     from qutip import Qobj
 except ImportError:
@@ -33,12 +52,6 @@ else:
     
 from . import paulis
 from ._types import array_like
-    
-MATPLOTLIB_INLINE_BACKENDS = {
-    "module://ipykernel.pylab.backend_inline",
-    "module://matplotlib_inline.backend_inline",
-    "nbAgg",
-}
 
 class LaTeXRepr:
     def __init__(self, obj):
@@ -46,6 +59,10 @@ class LaTeXRepr:
         
     def _repr_latex_(self):
         return self.obj.latex()
+
+PrintReturnType = Union[str, LaTeXRepr]
+if has_mpl:
+    PrintReturnType = Union[PrintReturnType, mpl.figure.Figure]
 
 
 class QPrintBase:
@@ -221,7 +238,7 @@ class QPrintBase:
         if has_qutip and isinstance(obj, Qobj):
             qobj = obj.data
             data = qobj.data
-        elif isinstance(obj, scipy.sparse.csr_matrix):
+        elif has_scipy and isinstance(obj, scipy.sparse.csr_matrix):
             qobj = obj
             data = qobj.data
         elif isinstance(obj, np.ndarray):
@@ -278,6 +295,9 @@ class QPrintBase:
             return r'\begin{split} ' + r' \\ '.join(lines) + r' \end{split}'
         
     def mpl(self):
+        if not has_mpl:
+            raise RuntimeError('Matplotlib is not available')
+        
         pre_expr, lines = self._make_lines('latex')
         
         if pre_expr:
@@ -477,7 +497,7 @@ class QPrintBraKet(QPrintBase):
             label_template = ','.join(['{}'] * len(subsystem_dims))
 
         # Make tuples of quantum state labels and format the term indices
-        if isinstance(qobj, scipy.sparse.csr_matrix):
+        if has_scipy and isinstance(qobj, scipy.sparse.csr_matrix):
             # CSR matrix: diff if indptr = number of elements in each row
             repeats = np.diff(qobj.indptr)
             row_labels_flat = np.repeat(np.arange(qobj.shape[0]), repeats)
@@ -560,7 +580,7 @@ def qprint(
     subsystem_dims: Optional[array_like] = None,
     binary: bool = False,
     fmt: Optional[str] = None
-) -> Union[str, LaTeXRepr, mpl.figure.Figure]:
+) -> PrintReturnType:
     """Pretty-print a quantum object.
     
     Three printing formats are supported:
@@ -722,7 +742,7 @@ def pauliprint(
     symbol: Optional[Union[str, Sequence[str]]] = None,
     delimiter: str = '',
     fmt: Optional[str] = None
-) -> Union[str, LaTeXRepr, mpl.figure.Figure]:
+) -> PrintReturnType:
     """Pretty-print a matrix or an array of Pauli components.
 
     Express the argument as a sum of Pauli strings. When a matrix is passed, it is Pauli-decomposed

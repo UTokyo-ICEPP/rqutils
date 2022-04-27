@@ -19,8 +19,14 @@ Math API
 from typing import Callable, Tuple, Any, Union
 import sys
 import tempfile
+import pickle
 import numpy as np
-import h5py
+try:
+    import h5py
+except ImportError:
+    has_h5py = False
+else:
+    has_h5py = True
 
 from ._types import ndarray, array_like
 
@@ -57,11 +63,15 @@ def matrix_ufunc(
             eigvals, eigcols = npmod.linalg.eig(mat)
     except:
         if save_errors:
-            with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmpf:
-                pass
-
-            with h5py.File(tmpf.name, 'w') as out:
-                out.create_dataset('matrices', data=mat)
+            if has_h5py:
+                with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmpf:
+                    pass
+    
+                with h5py.File(tmpf.name, 'w') as out:
+                    out.create_dataset('matrices', data=mat)
+            else:
+                with tempfile.NamedTemporaryFile(delete=False) as tmpf:
+                    pickle.dump(mat, tmpf)
                 
             sys.stderr.write(f'Error in eigendecomposition. Matrix saved at {tmpf.name}\n')
             
