@@ -380,7 +380,8 @@ def symmetry(dim: int):
 def labels(
     dim: Union[int, Sequence[int]],
     symbol: Optional[Union[str, Sequence[str]]] = None,
-    delimiter: str = ''
+    delimiter: str = '',
+    fmt: str = 'latex'
 ) -> np.ndarray:
     r"""Generate the labels for the Pauli matrices of a given dimension.
     
@@ -388,6 +389,8 @@ def labels(
         dim: Dimension(s) of the Pauli matrices.
         symbol: Base symbol.
         delimiter: Delimiter between the symbols for multibody labels.
+        fmt: Output format. Allowed values are 'text', 'latex', 'latex-text',
+            'latex-slash'.
         
     Returns:
         An ndarray of type string and shape `(d1**2, d2**2, ...)`.
@@ -402,18 +405,44 @@ def labels(
 
     for pauli_dim, sym in zip(dim, symbol):
         if delimiter and len(out.shape) > 0:
-            out = np.char.add(out, np.full_like(out, delimiter))
+            out = np.char.add(out, np.full(out.shape, delimiter))
             
         if not sym:
             if pauli_dim == 2:
                 labels = ['I', 'X', 'Y', 'Z']
             elif sym is None:
-                labels = list(fr'\lambda_{i}' for i in range(pauli_dim ** 2))
+                if fmt == 'text':
+                    labels = list(f'λ{i}' for i in range(pauli_dim ** 2))
+                else:
+                    labels = list(fr'\lambda_{i}' for i in range(pauli_dim ** 2))
             else:
                 labels = list(str(i) for i in range(pauli_dim ** 2))
         else:
             labels = list(f'{sym}_{i}' for i in range(pauli_dim ** 2))
             
         out = np.char.add(np.repeat(out[..., None], pauli_dim ** 2, axis=-1), labels)
+
+    if len(dim) >= 2:
+        if len(dim) == 2:
+            denom = '2'
+        elif fmt == 'text':
+            denom = f'2**{len(dim) - 1}'
+        else:
+            denom = '2^{%d}' % (len(dim) - 1)
+
+        if fmt in ('text', 'latex-slash'):
+            post = np.full(out.shape, f'/{denom}')
+
+        else:
+            if fmt == 'latex':
+                pre = np.full(out.shape, r'\frac{')
+                post = np.full(out.shape, '}{%s}' % denom)
+            else:
+                pre = np.full(out.shape, r'\textstyle{\frac{')
+                post = np.full(out.shape, '}{%s}}' % denom)
+
+            out = np.char.add(pre, out)
+        
+        out = np.char.add(out, post)
         
     return out

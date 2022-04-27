@@ -89,6 +89,7 @@ class QPrintBase:
         sign: int
         amp: str
         phase: str
+        label: str = ''
         
     def __init__(
         self,
@@ -252,7 +253,9 @@ class QPrintBase:
     def __repr__(self):
         expr = self._format_lhs('text')
         
-        if expr:
+        if expr is None:
+            expr = ''
+        else:
             expr += ' = '
 
         pre_expr, lines = self._make_lines('text')
@@ -286,7 +289,7 @@ class QPrintBase:
             
         lhs = self._format_lhs('latex')
                 
-        if lhs:
+        if lhs is not None:
             lines[0] = f'{lhs} = {lines[0]}'
                 
         if len(lines) == 1:
@@ -306,7 +309,7 @@ class QPrintBase:
             
         lhs = self._format_lhs('latex')
             
-        if lhs:
+        if lhs is not None:
             lines[0] = f'{lhs} = {lines[0]}'
             
         fig, ax = plt.subplots(1, figsize=[10., 0.5 * len(lines)])
@@ -322,7 +325,8 @@ class QPrintBase:
         return fig
     
     def _make_lines(self, mode) -> list:
-        global_sign, global_amp, global_phase, terms = self._compose()
+        global_sign, global_amp, global_phase, terms = self._process()
+        self._add_labels(terms, mode)
         
         pre_expr = ''
         
@@ -349,7 +353,7 @@ class QPrintBase:
                 line_expr += term.amp
                 
             line_expr += self._format_phase(term.phase, mode)
-            line_expr += self._format_label(term, mode)
+            line_expr += term.label
                 
             num_terms += 1
             if num_terms == self.terms_per_row:
@@ -419,11 +423,6 @@ class QPrintBraKet(QPrintBase):
         subsystem_dims: Specification of the dimensions of the subsystems.
         binary: Show bra and ket indices in binary.
     """
-    @dataclass
-    class Term(QPrintBase.Term):
-        ket: Optional[str] = None
-        bra: Optional[str] = None
-        
     class QobjType(Enum):
         KET = 1
         BRA = 2
@@ -471,9 +470,7 @@ class QPrintBraKet(QPrintBase):
         self.subsystem_dims = subsystem_dims
         self.binary = binary
         
-    def _compose(self):
-        global_sign, global_amp, global_phase, terms = self._process()
-        
+    def _add_labels(self, terms, mode):
         qobj, _ = self._qobj_data()
         
         objtype, dim = self._type_and_dim(qobj)
@@ -514,55 +511,39 @@ class QPrintBraKet(QPrintBase):
                 col_labels = np.unravel_index(np.arange(dim), subsystem_dims)
 
         # Update the term objects with the basis labels
-        terms_with_labels = []
-        
         for term in terms:
-            term = QPrintBraKet.Term(index=term.index, sign=term.sign, amp=term.amp, phase=term.phase)
-            
             if has_ket:
-                term.ket = label_template.format(*(r[term.index[0]] for r in row_labels))
+                ket_label = label_template.format(*(r[term.index[0]] for r in row_labels))
+
+                if mode == 'text':
+                    term.label += f'|{ket_label}>'
+                elif mode == 'latex':
+                    term.label += fr'| {ket_label} \rangle'
+                    
             if has_bra:
                 # idx can be an 1- or 2-tuple depending on the type of self.qobj
-                term.bra = label_template.format(*(c[term.index[-1]] for c in col_labels))
+                bra_label = label_template.format(*(c[term.index[-1]] for c in col_labels))
+
+                if mode == 'text':
+                    term.label += f'<{bra_label}|'
+                elif mode == 'latex':
+                    term.label += fr'\langle {bra_label} |'
                 
-            terms_with_labels.append(term)
+    def _format_lhs(self, mode) -> Union[str, None]:
+        if self.lhs_label:
+            objtype, _ = self._type_and_dim(self._qobj_data()[0])
 
-        return global_sign, global_amp, global_phase, terms_with_labels
-    
-    def _format_label(self, term, mode) -> str:
-        expr = ''
+            if mode == 'text':
+                if objtype == QPrintBraKet.QobjType.KET:
+                    return f'|{self.lhs_label}>'
+                elif objtype == QPrintBraKet.QobjType.BRA:
+                    return f'<{self.lhs_label}|'
 
-        if mode == 'text':
-            if term.ket is not None:
-                expr += f'|{term.ket}>'
-            if term.bra is not None:
-                expr += f'<{term.bra}|'
-
-        elif mode == 'latex':
-            if term.ket is not None:
-                expr += fr'| {term.ket} \rangle'
-            if term.bra is not None:
-                expr += fr'\langle {term.bra} |'            
-
-        return expr
-    
-    def _format_lhs(self, mode) -> str:
-        if not self.lhs_label:
-            return ''
-        
-        objtype, _ = self._type_and_dim(self._qobj_data()[0])
-
-        if mode == 'text':
-            if objtype == QPrintBraKet.QobjType.KET:
-                return f'|{self.lhs_label}>'
-            elif objtype == QPrintBraKet.QobjType.BRA:
-                return f'<{self.lhs_label}|'
-        
-        elif mode == 'latex':
-            if objtype == QPrintBraKet.QobjType.KET:
-                return fr'| {self.lhs_label} \rangle'
-            elif objtype == QPrintBraKet.QobjType.BRA:
-                return fr'\langle {self.lhs_label} |'
+            elif mode == 'latex':
+                if objtype == QPrintBraKet.QobjType.KET:
+                    return fr'| {self.lhs_label} \rangle'
+                elif objtype == QPrintBraKet.QobjType.BRA:
+                    return fr'\langle {self.lhs_label} |'
 
         return self.lhs_label
 
@@ -649,10 +630,6 @@ class QPrintPauli(QPrintBase):
         symbol: Pauli matrix symbols.
         delimiter: Pauli product delimiter.
     """
-    @dataclass
-    class Term(QPrintBase.Term):
-        pauli: str
-    
     def __init__(
         self,
         qobj: Any,
@@ -683,7 +660,7 @@ class QPrintPauli(QPrintBase):
         self.symbol = symbol
         self.delimiter = delimiter
         
-    def _compose(self):
+    def _process(self):
         qobj, _ = self._qobj_data(self.qobj)
         
         if self.dim is not None:
@@ -703,28 +680,25 @@ class QPrintPauli(QPrintBase):
                     components = qobj
                     
                 qobj = components.reshape(np.square(self.dim))
+                
+        return super()._process(qobj)
         
-        global_sign, global_amp, global_phase, terms = self._process(qobj)
-
+    def _add_labels(self, terms, mode):
+        qobj, _ = self._qobj_data()
+        
         dim = np.around(np.sqrt(qobj.shape)).astype(int)
         
-        labels = paulis.labels(dim, symbol=self.symbol, delimiter=self.delimiter)
+        labels = paulis.labels(dim, symbol=self.symbol, delimiter=self.delimiter,
+                               fmt=mode)
 
         # Update the term objects with the basis labels
-        terms_with_labels = []
-        
         for term in terms:
-            term = QPrintPauli.Term(index=term.index, sign=term.sign, amp=term.amp,
-                                    phase=term.phase, pauli=labels[term.index])
-            
-            terms_with_labels.append(term)
-
-        return global_sign, global_amp, global_phase, terms_with_labels
-            
-    def _format_label(self, term, mode):
-        return term.pauli
+            if mode == 'text':
+                term.label = f'*{labels[term.index]}'
+            else:
+                term.label = labels[term.index]
     
-    def _format_lhs(self, mode) -> str:
+    def _format_lhs(self, mode) -> Union[str, None]:
         return self.lhs_label
 
 
