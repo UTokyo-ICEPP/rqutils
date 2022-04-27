@@ -1,3 +1,20 @@
+r"""
+==========================================================
+Pretty-printer for quantum objects (:mod:`rqutils.qprint`)
+==========================================================
+
+.. currentmodule:: rqutils.qprint
+
+QPrint API
+==========
+
+.. autosummary::
+   :toctree: ../generated
+   
+   qprint
+   pauliprint
+"""
+
 from typing import Tuple, List, Sequence, Union, Optional, Any
 from numbers import Number
 import builtins
@@ -15,6 +32,7 @@ else:
     has_qutip = True
     
 from . import paulis
+from ._types import array_like
     
 MATPLOTLIB_INLINE_BACKENDS = {
     "module://ipykernel.pylab.backend_inline",
@@ -45,6 +63,7 @@ class QPrintBase:
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
         epsilon: Numerical cutoff for ignoring amplitudes (relative to max) and phase (absolute).
+        lhs_label: If not None, prepend 'label = ' to the printout.
     """
     
     @dataclass
@@ -376,7 +395,7 @@ class QPrintBraKet(QPrintBase):
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
         epsilon: Numerical cutoff for ignoring amplitudes (relative to max) and phase (absolute).
-        lhs_label: If not None, prepend '|`state_label`> = ' to the printout.
+        lhs_label: If not None, prepend 'label = ' to the printout.
         subsystem_dims: Specification of the dimensions of the subsystems.
         binary: Show bra and ket indices in binary.
     """
@@ -415,7 +434,7 @@ class QPrintBraKet(QPrintBase):
         phase_format: str = '.2f',
         epsilon: float = 1.e-6,
         lhs_label: Optional[str] = None,
-        subsystem_dims: Optional['array_like'] = None,
+        subsystem_dims: Optional[array_like] = None,
         binary: bool = False
     ):
         super().__init__(
@@ -528,19 +547,65 @@ class QPrintBraKet(QPrintBase):
         return self.lhs_label
 
 
-def qprint(qobj: Any, fmt: Optional[str] = None, **kwargs):
+def qprint(
+    qobj: Any,
+    amp_norm: Optional[Union[Number, Tuple[Number, str]]] = None,
+    phase_norm: Optional[Tuple[Number, str]] = (np.pi, 'π'),
+    global_phase: Optional[Union[Number, str]] = None,
+    terms_per_row: int = 0,
+    amp_format: str = '.3f',
+    phase_format: str = '.2f',
+    epsilon: float = 1.e-6,
+    lhs_label: Optional[str] = None,
+    subsystem_dims: Optional[array_like] = None,
+    binary: bool = False,
+    fmt: Optional[str] = None
+) -> Union[str, LaTeXRepr, mpl.figure.Figure]:
+    """Pretty-print a quantum object.
+    
+    Three printing formats are supported:
+    - `'text'`: Print text to stdout.
+    - `'latex'`: Return an object processable by IPython into a typeset LaTeX expression.
+    - `'mpl'`: Return a matplotlib figure.
+    
+    Args:
+        qobj: Input quantum object.
+        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in LaTeX).
+        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in LaTeX).
+        global_phase: Specification of the phase to factor out. Give a numeric offset or 'mean'.
+        terms_per_row: Number of terms to show per row.
+        amp_format: Format for the numerical value of the amplitude absolute values.
+        phase_format: Format for the numerical value of the phases.
+        epsilon: Numerical cutoff for ignoring amplitudes (relative to max) and phase (absolute).
+        lhs_label: If not None, prepend 'label = ' to the printout.
+        subsystem_dims: Specification of the dimensions of the subsystems.
+        binary: Show bra and ket indices in binary.
+        fmt: Output format.
+    """
     if fmt is None:
         if hasattr(builtins, '__IPYTHON__'):
             fmt = 'latex'
         else:
             fmt = 'text'
             
+    pobj = QPrintBraKet(qobj=qobj,
+                        amp_norm=amp_norm,
+                        phase_norm=phase_norm,
+                        global_phase=global_phase,
+                        terms_per_row=terms_per_row,
+                        amp_format=amp_format,
+                        phase_format=phase_format,
+                        epsilon=epsilon,
+                        lhs_label=lhs_label,
+                        subsystem_dims=subsystem_dims,
+                        binary=binary)
+            
     if fmt == 'text':
-        return QPrintBraKet(qobj, **kwargs)
+        return pobj
     elif fmt == 'latex':
-        return LaTeXRepr(QPrintBraKet(qobj, **kwargs))
+        return LaTeXRepr(pobj)
     elif fmt == 'mpl':
-        return QPrintBraKet(qobj, **kwargs).mpl()
+        return pobj.mpl()
     else:
         raise NotImplementedError(f'qprint with format {fmt} not implemented')
 
@@ -558,6 +623,7 @@ class QPrintPauli(QPrintBase):
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
         epsilon: Numerical cutoff for ignoring amplitudes (relative to max) and phase (absolute).
+        lhs_label: If not None, prepend 'label = ' to the printout.
         dim: Specification of the dimensions of the subsystems. Used only when `qobj` is a square
             matrix or a 1D array.
         symbol: Pauli matrix symbols.
@@ -578,7 +644,7 @@ class QPrintPauli(QPrintBase):
         phase_format: str = '.2f',
         epsilon: float = 1.e-6,
         lhs_label: Optional[str] = None,
-        dim: Optional['array_like'] = None,
+        dim: Optional[array_like] = None,
         symbol: Optional[Union[str, Sequence[str]]] = None,
         delimiter: str = ''
     ):
@@ -642,18 +708,70 @@ class QPrintPauli(QPrintBase):
         return self.lhs_label
 
 
-def pauliprint(qobj: Any, fmt: Optional[str] = None, **kwargs):
+def pauliprint(
+    qobj: Any,
+    amp_norm: Optional[Union[Number, Tuple[Number, str]]] = None,
+    phase_norm: Optional[Tuple[Number, str]] = (np.pi, 'π'),
+    global_phase: Optional[Union[Number, str]] = None,
+    terms_per_row: int = 0,
+    amp_format: str = '.3f',
+    phase_format: str = '.2f',
+    epsilon: float = 1.e-6,
+    lhs_label: Optional[str] = None,
+    dim: Optional[array_like] = None,
+    symbol: Optional[Union[str, Sequence[str]]] = None,
+    delimiter: str = '',
+    fmt: Optional[str] = None
+) -> Union[str, LaTeXRepr, mpl.figure.Figure]:
+    """Pretty-print a matrix or an array of Pauli components.
+
+    Express the argument as a sum of Pauli strings. When a matrix is passed, it is Pauli-decomposed
+    according to the `dim` parameter. 
+
+    Three printing formats are supported:
+    - `'text'`: Print text to stdout.
+    - `'latex'`: Return an object processable by IPython into a typeset LaTeX expression.
+    - `'mpl'`: Return a matplotlib figure.
+    
+    Args:
+        qobj: Input quantum object.
+        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in LaTeX).
+        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in LaTeX).
+        global_phase: Specification of the phase to factor out. Give a numeric offset or 'mean'.
+        terms_per_row: Number of terms to show per row.
+        amp_format: Format for the numerical value of the amplitude absolute values.
+        phase_format: Format for the numerical value of the phases.
+        epsilon: Numerical cutoff for ignoring amplitudes (relative to max) and phase (absolute).
+        lhs_label: If not None, prepend 'label = ' to the printout.
+        dim: Specification of the dimensions of the subsystems. Used only when `qobj` is a square
+            matrix or a 1D array.
+        symbol: Pauli matrix symbols.
+        delimiter: Pauli product delimiter.
+    """
     if fmt is None:
         if hasattr(builtins, '__IPYTHON__'):
             fmt = 'latex'
         else:
             fmt = 'text'
             
+    pobj = QPrintPauli(qobj=qobj,
+                       amp_norm=amp_norm,
+                       phase_norm=phase_norm,
+                       global_phase=global_phase,
+                       terms_per_row=terms_per_row,
+                       amp_format=amp_format,
+                       phase_format=phase_format,
+                       epsilon=epsilon,
+                       lhs_label=lhs_label,
+                       dim=dim,
+                       symbol=symbol,
+                       delimiter=delimiter)
+            
     if fmt == 'text':
-        return QPrintPauli(qobj, **kwargs)
+        return pobj
     elif fmt == 'latex':
-        return LaTeXRepr(QPrintPauli(qobj, **kwargs))
+        return LaTeXRepr(pobj)
     elif fmt == 'mpl':
-        return QPrintPauli(qobj, **kwargs).mpl()
+        return pobj.mpl()
     else:
         raise NotImplementedError(f'qprint with format {fmt} not implemented')

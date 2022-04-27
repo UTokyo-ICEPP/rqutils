@@ -1,21 +1,42 @@
-from typing import Callable, Any, Union
+"""
+===================================================
+Useful quantum math functions (:mod:`rqutils.math`)
+===================================================
+
+.. currentmodule:: rqutils.math
+
+Math API
+========
+
+.. autosummary::
+   :toctree: ../generated
+   
+   matrix_ufunc
+   matrix_exp
+   matrix_angle
+"""
+
+from typing import Callable, Tuple, Any, Union
 import sys
 import tempfile
 import numpy as np
 import h5py
 
+from ._types import ndarray, array_like
+
 def matrix_ufunc(
     op: Callable,
-    mat: 'array_like',
+    mat: array_like,
     hermitian: Union[int, bool] = 0,
     with_diagonals: bool = False,
     npmod=np,
     save_errors=False
-) -> 'ndarray':
+) -> Union[ndarray, Tuple[ndarray, ndarray]]:
     """Apply a unitary-invariant unary matrix operator to an array of normal matrices.
     
-    The argument `mat` must be an array of normal matrices (in the last two dimensions). This function
-    unitary-diagonalizes the matrices, applies `op` to the diagonals, and inverts the diagonalization.
+    The argument `mat` must be an array of normal (i.e. square diagonalizable) matrices in the last
+    two dimensions. This function unitary-diagonalizes the matrices, applies `op` to the diagonals,
+    and inverts the diagonalization.
     
     Args:
         op: Unary operator to be applied to the diagonals of `mat`.
@@ -58,22 +79,24 @@ def matrix_ufunc(
         return op_mat
 
 def matrix_exp(
-    mat: Any,
+    mat: array_like,
     hermitian: Union[int, bool] = 0,
     with_diagonals: bool = False,
     npmod=np,
     save_errors=False
-) -> 'array':
+) -> ndarray:
+    """`matrix_ufunc(exp, ...)`"""
     return matrix_ufunc(npmod.exp, mat, hermitian=hermitian, with_diagonals=with_diagonals,
                         npmod=npmod, save_errors=save_errors)
 
 def matrix_angle(
-    mat: Any,
+    mat: array_like,
     hermitian: Union[int, bool] = 0,
     with_diagonals: bool = False,
     npmod=np,
     save_errors=False
-) -> 'array':
+) -> ndarray:
+    """`matrix_ufunc(angle, ...)`"""
     return matrix_ufunc(npmod.angle, mat, hermitian=hermitian, with_diagonals=with_diagonals,
                         npmod=npmod, save_errors=save_errors)
 
