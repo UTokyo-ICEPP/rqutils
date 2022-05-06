@@ -23,7 +23,7 @@ copyright = '2022, Yutaro Iiyama'
 author = 'Yutaro Iiyama'
 
 # The full version, including alpha/beta/rc tags
-release = '0.1'
+release = '0.1.1'
 
 
 # -- General configuration ---------------------------------------------------
