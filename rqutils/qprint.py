@@ -12,7 +12,6 @@ QPrint API
    :toctree: ../generated
    
    qprint
-   pauliprint
 """
 
 from typing import Tuple, List, Sequence, Union, Optional, Any
@@ -84,6 +83,7 @@ def qprint(
     """Pretty-print a quantum object.
     
     Available output formats are
+    
     - `'braket'`: For a column vector, row vector, or matrix input. Prints out the mathematical
       expression of the linear combination of bras, kets, or ket-bras.
     - `'pauli'`: For an input representing a square matrix (shape `(d1*d2*..., d1*d2*...)`) or a
@@ -91,6 +91,7 @@ def qprint(
       interpretation.
 
     Three printing formats are supported:
+    
     - `'text'`: Print text to stdout.
     - `'latex'`: Return an object processable by IPython into a typeset LaTeX expression.
     - `'mpl'`: Return a matplotlib figure.
@@ -112,6 +113,9 @@ def qprint(
         symbol: Pauli matrix symbols. Only for `fmt='pauli'`.
         delimiter: Pauli product delimiter. Only for `fmt='pauli'`.
         output: Output method (`'text'`, `'latex'`, or `'mpl'`).
+        
+    Returns:
+        Object to be printed.
     """
     if output is None:
         if hasattr(builtins, '__IPYTHON__'):
@@ -440,6 +444,7 @@ class QPrintBase:
                     line_expr += ' - '
                 else:
                     line_expr += ' + '
+
             elif term.sign == -1:
                 line_expr += '-'
                 
@@ -727,7 +732,7 @@ class QPrintPauli(QPrintBase):
             if mode == 'text':
                 term.label = f'*{labels[term.index]}'
             else:
-                term.label = labels[term.index]
+                term.label = str(labels[term.index])
     
     def _format_lhs(self, mode) -> Union[str, None]:
         return self.lhs_label
