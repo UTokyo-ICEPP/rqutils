@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Union, Sequence
 
 import numpy as np
 ndarray = np.ndarray
@@ -10,3 +10,5 @@ else:
     ndarray = Union[ndarray, jnp.ndarray]
 
 array_like = Union[list, tuple, ndarray]
+
+MatrixDimension = Union[int, Sequence[int]]

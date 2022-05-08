@@ -95,22 +95,22 @@ then the truncated matrix :math:`\bar{H}^{(m)}` is
 
 .. math::
 
-    \bar{H}^{(m)} = \sum_{k=0}^{m^2-1} \bar{\nu}_k \lambda^{m}_k,
+    \bar{H}^{(m)} = \sum_{k=0}^{m^2-1} \bar{\nu}_k \lambda^{(m)}_k,
 
 with :math:`\bar{\nu}_k = \nu_k` for :math:`1 \leq k \leq m^2 - 1`. For :math:`k=0`, however, we need to
 consider the projection of the diagonal matrices:
 
 .. math::
 
-    \mathrm{tr}_{m} (\lambda^{m}_0 \bar{\lambda}^{(n|m)}_0) & = 2 \sqrt{\frac{m}{n}}, \\
-    \mathrm{tr}_{m} (\lambda^{m}_0 \bar{\lambda}^{(n|m)}_{d^2-1}) & = 2 \sqrt{\frac{m}{d(d-1)}} \quad \text{if} \; d > m
+    \mathrm{tr}_{m} (\lambda^{(m)}_0 \bar{\lambda}^{(n|m)}_0) & = 2 \sqrt{\frac{m}{n}}, \\
+    \mathrm{tr}_{m} (\lambda^{(m)}_0 \bar{\lambda}^{(n|m)}_{d^2-1}) & = 2 \sqrt{\frac{m}{d(d-1)}} \quad \text{if} \; d > m
 
 where :math:`\mathrm{tr}_{m}(\cdot)` represents the :math:`m`-dimensional trace, and :math:`\bar{\lambda}^{(n|m)}_k`
 is the :math:`m`-dimensional submatrix of :math:`\lambda^{(n)}_k`. Thus we have
 
 .. math::
 
-    \bar{\nu}_0 = \frac{1}{2} \mathrm{tr}_m (\lambda^m_0 \bar{H}^{(m)}) = \sqrt{\frac{m}{n}} \nu_0 + \sum_{d > m} \sqrt{\frac{m}{d(d-1)}} \nu_{d^2-1}.
+    \bar{\nu}_0 = \frac{1}{2} \mathrm{tr}_m (\lambda^{(m)}_0 \bar{H}^{(m)}) = \sqrt{\frac{m}{n}} \nu_0 + \sum_{d > m} \sqrt{\frac{m}{d(d-1)}} \nu_{d^2-1}.
     
 Pauli Matrices API
 ==================
@@ -139,9 +139,9 @@ except ImportError:
 else:
     has_jax = True
 
-from ._types import array_like, ndarray
+from ._types import array_like, ndarray, MatrixDimension
 
-def paulis(dim: Union[int, Sequence[int]]) -> np.ndarray:
+def paulis(dim: MatrixDimension) -> np.ndarray:
     r"""Return a list of generalized Pauli matrices of given dimension(s) as an array.
  
     Args:
@@ -210,7 +210,7 @@ def paulis(dim: Union[int, Sequence[int]]) -> np.ndarray:
 
 def components(
     matrix: array_like,
-    dim: Optional[Sequence[int]] = None,
+    dim: Optional[MatrixDimension] = None,
     npmod: ModuleType = np
 ) -> ndarray:
     r"""Return the Pauli decomposition coefficients :math:`\nu_{k_1 \dots k_n}` of the matrix.
@@ -230,7 +230,10 @@ def components(
     if npmod is np:
         if dim is None:
             dim = (matrix.shape[-1],)
-        elif np.prod(dim) != matrix.shape[-1]:
+        elif isinstance(dim, int):
+            dim = (dim,)
+            
+        if np.prod(dim) != matrix.shape[-1]:
             raise ValueError(f'Invalid subsystem dimensions {dim}')
         
     basis = paulis(dim)
@@ -240,7 +243,7 @@ def components(
 
 def compose(
     components: array_like,
-    dim: Optional[Sequence[int]] = None,
+    dim: Optional[MatrixDimension] = None,
     npmod: ModuleType = np
 ) -> ndarray:
     r"""Compose a matrix from the Pauli components.
@@ -253,10 +256,13 @@ def compose(
     Returns:
         A complex array of shape `(..., d1*d2*..., d1*d2*...)`.
     """
-    if dim is None:
-        dim = np.around(np.sqrt(components.shape)).astype(int)
+    if npmod is np:
+        if dim is None:
+            dim = (np.around(np.sqrt(components.shape)).astype(int),)
+        elif isinstance(dim, int):
+            dim = (dim,)
 
-        if npmod is np and not np.allclose(np.square(dim), components.shape):
+        if not np.allclose(np.square(dim), components.shape):
             raise ValueError('Components array shape invalid')
 
     basis = paulis(dim)
@@ -290,7 +296,7 @@ def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
 
 def truncate(
     components: array_like,
-    reduced_dim: Union[int, Sequence[int]],
+    reduced_dim: MatrixDimension,
     npmod: ModuleType = np
 ) -> ndarray:
     r"""Truncate a component array of a matrix into the components for a submatrix.
@@ -310,8 +316,9 @@ def truncate(
         reduced_dim = (reduced_dim,) * len(components.shape)
         
     num_subsystems = len(reduced_dim)
+    first_component_axis = len(components.shape) - num_subsystems
 
-    original_shape = components.shape[-num_subsystems:]
+    original_shape = components.shape[first_component_axis:]
     reduced_shape = np.square(reduced_dim)
 
     if npmod is np:
@@ -326,11 +333,17 @@ def truncate(
     def project_dim(idim, components):
         # Construct a matrix (v, diag([1] * reduced)[1:], diag([0] * truncated))^T 
         projector = l0_projector(reduced_dim[idim], original_dim[idim])
-        diag = npmod.concatenate((npmod.ones(reduced_dim[idim] ** 2),
-                                  npmod.zeros(original_dim[idim] ** 2 - reduced_dim[idim] ** 2)))
+        diag = npmod.concatenate((npmod.ones(reduced_shape[idim]),
+                                  npmod.zeros(original_shape[idim] - reduced_shape[idim])))
         projector = npmod.concatenate((projector[None, :], npmod.diag(diag)[1:]), axis=0)
+        
+        projected = npmod.tensordot(projector, components, (1, first_component_axis + idim))
+        
+        # After tensordot, the projected axis is at position 0
+        transpose = list(range(1, len(components.shape)))
+        transpose.insert(first_component_axis + idim, 0)
 
-        return npmod.tensordot(projector, components, (1, -num_subsystems + idim))
+        return projected.transpose(transpose)
 
     if has_jax and npmod is jnp:
         def loop_body(idim, components):
@@ -378,7 +391,7 @@ def symmetry(dim: int):
 
 
 def labels(
-    dim: Union[int, Sequence[int]],
+    dim: MatrixDimension,
     symbol: Optional[Union[str, Sequence[str]]] = None,
     delimiter: str = '',
     fmt: str = 'latex'
@@ -414,11 +427,11 @@ def labels(
                 if fmt == 'text':
                     labels = list(f'λ{i}' for i in range(pauli_dim ** 2))
                 else:
-                    labels = list(fr'\lambda_{i}' for i in range(pauli_dim ** 2))
+                    labels = list(fr'\lambda_{{{i}}}' for i in range(pauli_dim ** 2))
             else:
                 labels = list(str(i) for i in range(pauli_dim ** 2))
         else:
-            labels = list(f'{sym}_{i}' for i in range(pauli_dim ** 2))
+            labels = list(f'{sym}_{{{i}}}' for i in range(pauli_dim ** 2))
             
         out = np.char.add(np.repeat(out[..., None], pauli_dim ** 2, axis=-1), labels)
 
