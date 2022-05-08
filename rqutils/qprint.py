@@ -50,7 +50,7 @@ else:
     has_qutip = True
     
 from . import paulis
-from ._types import array_like
+from ._types import array_like, MatrixDimension
 
 class LaTeXRepr:
     def __init__(self, obj):
@@ -211,12 +211,9 @@ class QPrintBase:
         self.epsilon = epsilon
         self.lhs_label = lhs_label
         
-    def _process(self, obj=None) -> Tuple[int, str, str, List[List[Term]]]:
+    def _process(self) -> Tuple[int, str, str, List[List[Term]]]:
         """Compose a list of QPrintTerms."""
-        if obj is None:
-            obj = self.qobj
-            
-        qobj, data = self._qobj_data(obj)
+        qobj, data = self._qobj_data()
 
         # Amplitude format template
         amp_template = f'{{:{self.amp_format}}}'
@@ -314,13 +311,13 @@ class QPrintBase:
         amp_atol = np.amax(absamp) * self.epsilon
         amp_is_zero = np.isclose(np.zeros_like(absamp), absamp, atol=amp_atol)
         term_indices = list(zip(*np.logical_not(amp_is_zero).nonzero())) # convert into list of tuples
-
+        
         # List of terms
         terms = []
 
         for idx in term_indices:
             sign, phase_expr = sign_and_phase(norm_phase[idx], axis_proj[idx], rounded_phase[idx])
-                
+
             if rounded_amp[idx] == -1:
                 amp_expr = amp_template.format(absamp[idx])
             else:
@@ -330,21 +327,18 @@ class QPrintBase:
 
         return global_sign, global_amp, global_phase, terms
     
-    def _qobj_data(self, obj=None):
-        if obj is None:
-            obj = self.qobj
-
-        if has_qutip and isinstance(obj, Qobj):
-            qobj = obj.data
+    def _qobj_data(self):
+        if has_qutip and isinstance(self.qobj, Qobj):
+            qobj = self.qobj.data
             data = qobj.data
-        elif has_scipy and isinstance(obj, scipy.sparse.csr_matrix):
-            qobj = obj
+        elif has_scipy and isinstance(self.qobj, scipy.sparse.csr_matrix):
+            qobj = self.qobj
             data = qobj.data
-        elif isinstance(obj, np.ndarray):
-            qobj = obj
+        elif isinstance(self.qobj, np.ndarray):
+            qobj = self.qobj
             data = qobj
         else:
-            raise NotImplementedError(f'qprint not implemented for {type(obj)}')
+            raise NotImplementedError(f'qprint not implemented for {type(self.qobj)}')
             
         return qobj, data
     
@@ -677,7 +671,7 @@ class QPrintPauli(QPrintBase):
         phase_format: str = '.2f',
         epsilon: float = 1.e-6,
         lhs_label: Optional[str] = None,
-        dim: Optional[array_like] = None,
+        dim: Optional[MatrixDimension] = None,
         symbol: Optional[Union[str, Sequence[str]]] = None,
         delimiter: str = ''
     ):
@@ -696,8 +690,8 @@ class QPrintPauli(QPrintBase):
         self.symbol = symbol
         self.delimiter = delimiter
         
-    def _process(self):
-        qobj, _ = self._qobj_data(self.qobj)
+    def _qobj_data(self):
+        qobj, data = super()._qobj_data()
         
         if self.dim is not None:
             if len(qobj.shape) == 2 and qobj.shape[0] == qobj.shape[1]:
@@ -708,6 +702,7 @@ class QPrintPauli(QPrintBase):
                     matrix = qobj
 
                 qobj = paulis.components(matrix, dim=self.dim)
+                data = qobj
 
             elif len(qobj.shape) == 1:
                 try:
@@ -716,8 +711,9 @@ class QPrintPauli(QPrintBase):
                     components = qobj
                     
                 qobj = components.reshape(np.square(self.dim))
+                data = qobj
                 
-        return super()._process(qobj)
+        return qobj, data
         
     def _add_labels(self, terms, mode):
         qobj, _ = self._qobj_data()
@@ -726,7 +722,7 @@ class QPrintPauli(QPrintBase):
         
         labels = paulis.labels(dim, symbol=self.symbol, delimiter=self.delimiter,
                                fmt=mode)
-
+        
         # Update the term objects with the basis labels
         for term in terms:
             if mode == 'text':
