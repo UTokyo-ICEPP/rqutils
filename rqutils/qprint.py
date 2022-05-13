@@ -411,6 +411,9 @@ class QPrintBase:
     
     def _qobj_data(self, qobj):
         if has_qutip and isinstance(qobj, Qobj):
+            if self._dim is None:
+                self._dim = tuple(qobj.dims[0])
+
             qobj = qobj.data
             data = qobj.data
         elif has_scipy and isinstance(qobj, scipy.sparse.csr_matrix):
