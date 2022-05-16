@@ -23,7 +23,7 @@ These matrices satisfy the normalization condition
 
     \mathrm{tr}(\lambda^{(n)}_k \lambda^{(n)}_l) = 2 \delta_{k, l}
 
-and thus form an orthonormal basis for the space of :math:`n`-dimensional Hermitian matrices. 
+and thus form an orthonormal basis for the space of :math:`n`-dimensional Hermitian matrices.
 
 Implications of the normalization
 ---------------------------------
@@ -111,13 +111,13 @@ is the :math:`m`-dimensional submatrix of :math:`\lambda^{(n)}_k`. Thus we have
 .. math::
 
     \bar{\nu}_0 = \frac{1}{2} \mathrm{tr}_m (\lambda^{(m)}_0 \bar{H}^{(m)}) = \sqrt{\frac{m}{n}} \nu_0 + \sum_{d > m} \sqrt{\frac{m}{d(d-1)}} \nu_{d^2-1}.
-    
+
 Pauli Matrices API
 ==================
 
 .. autosummary::
    :toctree: ../generated
-   
+
    paulis
    components
    compose
@@ -143,19 +143,19 @@ from ._types import array_like, ndarray, MatrixDimension
 
 def paulis(dim: MatrixDimension) -> np.ndarray:
     r"""Return a list of generalized Pauli matrices of given dimension(s) as an array.
- 
+
     Args:
         dim: Dimension(s) of the Pauli matrices.
-        
+
     Returns:
         An array of Pauli (product) matrices as an array. For `dim=(d1, d2, ...)`, the shape of
         the array is `(d1**2, d2**2, ..., d1*d2*..., d1*d2*...)`.
     """
     if isinstance(dim, int):
         dim = (dim,)
-        
+
     subsystems = []
-        
+
     for pauli_dim in dim:
         # Compose the unnormalized matrices
         matrices = np.zeros((pauli_dim ** 2, pauli_dim, pauli_dim), dtype=complex)
@@ -178,12 +178,12 @@ def paulis(dim: MatrixDimension) -> np.ndarray:
         matrices *= np.sqrt(2. / norm)[:, None, None]
 
         subsystems.append(matrices)
-        
+
     num_sub = len(dim)
 
     if num_sub == 1:
         return subsystems[0]
-    
+
     else:
         # Compose Pauli products
         # (d1**2, d1, d1) x (d2**2, d2, d2) -> (d1**2, d2**2, d1*d2, d1*d2)
@@ -204,7 +204,7 @@ def paulis(dim: MatrixDimension) -> np.ndarray:
         indices = f'{",".join(indices_in)}->{"".join(indices_out)}'
         dim_array = np.asarray(dim)
         shape = np.concatenate((np.square(dim_array), np.prod(np.repeat(dim_array[None, :], 2, axis=0), axis=1)))
-        
+
         return np.einsum(indices, *subsystems).reshape(*shape) / (2 ** (num_sub - 1))
 
 
@@ -214,16 +214,16 @@ def components(
     npmod: ModuleType = np
 ) -> ndarray:
     r"""Return the Pauli decomposition coefficients :math:`\nu_{k_1 \dots k_n}` of the matrix.
-    
+
     Args:
         matrix: Matrix to decompose. The last two dimensions of the array are dotted with the Pauli
             matrices.
         dim: Subsystem dimensions. The product of subsystem dimensions must match the matrix dimension.
             If None, the matrix is assumed to represent a single system.
-        
+
     Returns:
         A complex array of shape `(..., d1**2, d2**2, ...)` where `d1`, `d2`, ... are the subsystem dimensions.
-        
+
     Raises:
         ValueError: If `prod(dim)` does not match the matrix dimension.
     """
@@ -232,10 +232,10 @@ def components(
             dim = (matrix.shape[-1],)
         elif isinstance(dim, int):
             dim = (dim,)
-            
+
         if np.prod(dim) != matrix.shape[-1]:
             raise ValueError(f'Invalid subsystem dimensions {dim}')
-        
+
     basis = paulis(dim)
 
     return npmod.tensordot(matrix, basis, ((-2, -1), (-1, -2))) * (2 ** (len(dim) - 2))
@@ -247,12 +247,12 @@ def compose(
     npmod: ModuleType = np
 ) -> ndarray:
     r"""Compose a matrix from the Pauli components.
-    
+
     Args:
         components: Pauli components of the desired matrix, shape (..., d1**2, d2**2, ...)
         dim: Subsystem dimensions. If present, last `len(dim)` dimensions of `components`
             are dotted with the corresponding Pauli matrices.
-        
+
     Returns:
         A complex array of shape `(..., d1*d2*..., d1*d2*...)`.
     """
@@ -262,7 +262,7 @@ def compose(
         elif isinstance(dim, int):
             dim = (dim,)
 
-        if not np.allclose(np.square(dim), components.shape):
+        if not np.allclose(np.square(dim), components.shape[-len(dim):]):
             raise ValueError('Components array shape invalid')
 
     basis = paulis(dim)
@@ -270,24 +270,24 @@ def compose(
     comp_axes = list(range(-len(dim), 0))
     pauli_axes = list(range(len(dim)))
     return npmod.tensordot(components, basis, (comp_axes, pauli_axes))
-    
-    
+
+
 def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
     r"""Return the vector that projects the components of original_dim decomposition onto lambda_0 of reduced_dim.
-    
+
     Args:
         reduced_dim: Matrix dimension of the target subspace.
         original_dim: Matrix dimension of the full space.
-        
+
     Returns:
         Projection vector :math:`\vec{v}` that gives :math:`\bar{\nu}_0 = \vec{v} \cdot \vec{\nu}`.
     """
     if reduced_dim > original_dim:
         raise ValueError('Reduced dim greater than original dim')
-    
+
     projector = np.zeros(original_dim ** 2)
     projector[0] = np.sqrt(reduced_dim / original_dim)
-    
+
     for d in range(reduced_dim + 1, original_dim + 1):
         projector[d ** 2 - 1] = np.sqrt(reduced_dim / d / (d - 1))
 
@@ -300,21 +300,21 @@ def truncate(
     npmod: ModuleType = np
 ) -> ndarray:
     r"""Truncate a component array of a matrix into the components for a submatrix.
-    
+
     The component array can have extra dimensions in front (e.g. time axis if this is a time series of components).
     In such a case, reduced_dim must be a sequence of integers with the length correpsonding to the number of
     subsystems.
-    
+
     Args:
         components: Pauli components of the original matrix, shape (..., d1**2, d2**2, ...)
         reduced_dim: Dimension(s) of the submatrix(es).
-        
+
     Returns:
         Components of the submatrix, shape (..., r1**2, r2**2, ...)
     """
     if npmod is np and isinstance(reduced_dim, int):
         reduced_dim = (reduced_dim,) * len(components.shape)
-        
+
     num_subsystems = len(reduced_dim)
     first_component_axis = len(components.shape) - num_subsystems
 
@@ -324,21 +324,21 @@ def truncate(
     if npmod is np:
         if np.any(reduced_shape > np.asarray(original_shape)):
             raise ValueError(f'Reduced dimensions greater than original dimensions')
-            
+
         if np.allclose(reduced_shape, original_shape):
             return components.copy()
-        
+
     original_dim = npmod.around(npmod.sqrt(original_shape)).astype(int)
 
     def project_dim(idim, components):
-        # Construct a matrix (v, diag([1] * reduced)[1:], diag([0] * truncated))^T 
+        # Construct a matrix (v, diag([1] * reduced)[1:], diag([0] * truncated))^T
         projector = l0_projector(reduced_dim[idim], original_dim[idim])
         diag = npmod.concatenate((npmod.ones(reduced_shape[idim]),
                                   npmod.zeros(original_shape[idim] - reduced_shape[idim])))
         projector = npmod.concatenate((projector[None, :], npmod.diag(diag)[1:]), axis=0)
-        
+
         projected = npmod.tensordot(projector, components, (1, first_component_axis + idim))
-        
+
         # After tensordot, the projected axis is at position 0
         transpose = list(range(1, len(components.shape)))
         transpose.insert(first_component_axis + idim, 0)
@@ -351,9 +351,9 @@ def truncate(
                                 lambda c: c,
                                 lambda c: project_dim(idim, c),
                                 components)
-        
+
         components = jax.lax.fori_loop(0, num_subsystems, loop_body, components)
-        
+
     else:
         for idim in range(num_subsystems):
             if reduced_dim[idim] != original_dim[idim]:
@@ -366,15 +366,15 @@ def truncate(
 
 def symmetry(dim: int):
     r"""Return the symmetry (-1, 0, 1) of the Pauli matrices.
-    
+
     Args:
         dim: Dimension of the Pauli matrices.
-        
+
     Returns:
         An 1D integer array with entries -1, 0, 1 depending on whether the corresponding Pauli matrix
         is antisymmetric, diagonal, or symmetric.
     """
-    
+
     symmetry = np.zeros(dim ** 2, dtype=int)
 
     ip = 1
@@ -386,7 +386,7 @@ def symmetry(dim: int):
             ip += 1
 
         ip += 1
-        
+
     return symmetry
 
 
@@ -397,29 +397,29 @@ def labels(
     fmt: str = 'latex'
 ) -> np.ndarray:
     r"""Generate the labels for the Pauli matrices of a given dimension.
-    
+
     Args:
         dim: Dimension(s) of the Pauli matrices.
         symbol: Base symbol.
         delimiter: Delimiter between the symbols for multibody labels.
         fmt: Output format. Allowed values are 'text', 'latex', 'latex-text',
             'latex-slash'.
-        
+
     Returns:
         An ndarray of type string and shape `(d1**2, d2**2, ...)`.
     """
     if isinstance(dim, int):
         dim = (dim,)
-        
+
     if symbol is None or isinstance(symbol, str):
         symbol = (symbol,) * len(dim)
-        
+
     out = np.array('', dtype=str)
 
     for pauli_dim, sym in zip(dim, symbol):
         if delimiter and len(out.shape) > 0:
             out = np.char.add(out, np.full(out.shape, delimiter))
-            
+
         if not sym:
             if pauli_dim == 2:
                 labels = ['I', 'X', 'Y', 'Z']
@@ -432,7 +432,7 @@ def labels(
                 labels = list(str(i) for i in range(pauli_dim ** 2))
         else:
             labels = list(f'{sym}_{{{i}}}' for i in range(pauli_dim ** 2))
-            
+
         out = np.char.add(np.repeat(out[..., None], pauli_dim ** 2, axis=-1), labels)
 
     if len(dim) >= 2:
@@ -455,7 +455,7 @@ def labels(
                 post = np.full(out.shape, '}{%s}}' % denom)
 
             out = np.char.add(pre, out)
-        
+
         out = np.char.add(out, post)
-        
+
     return out
