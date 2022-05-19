@@ -12,6 +12,7 @@
 #
 import os
 import sys
+import importlib.metadata
 dn = os.path.dirname
 sys.path.insert(0, dn(dn(dn(os.path.abspath(__file__)))))
 
@@ -23,7 +24,7 @@ copyright = '2022, Yutaro Iiyama'
 author = 'Yutaro Iiyama'
 
 # The full version, including alpha/beta/rc tags
-release = '0.1.1'
+release = importlib.metadata.version(project)
 
 
 # -- General configuration ---------------------------------------------------
