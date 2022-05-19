@@ -258,7 +258,7 @@ def compose(
     """
     if npmod is np:
         if dim is None:
-            dim = (np.around(np.sqrt(components.shape)).astype(int),)
+            dim = np.around(np.sqrt(components.shape)).astype(int)
         elif isinstance(dim, int):
             dim = (dim,)
 
@@ -394,6 +394,7 @@ def labels(
     dim: MatrixDimension,
     symbol: Optional[Union[str, Sequence[str]]] = None,
     delimiter: str = '',
+    norm: bool = True,
     fmt: str = 'latex'
 ) -> np.ndarray:
     r"""Generate the labels for the Pauli matrices of a given dimension.
@@ -402,6 +403,7 @@ def labels(
         dim: Dimension(s) of the Pauli matrices.
         symbol: Base symbol.
         delimiter: Delimiter between the symbols for multibody labels.
+        norm: Include the normalization factors.
         fmt: Output format. Allowed values are 'text', 'latex', 'latex-text',
             'latex-slash'.
 
@@ -435,7 +437,7 @@ def labels(
 
         out = np.char.add(np.repeat(out[..., None], pauli_dim ** 2, axis=-1), labels)
 
-    if len(dim) >= 2:
+    if norm and len(dim) >= 2:
         if len(dim) == 2:
             denom = '2'
         elif fmt == 'text':
