@@ -28,7 +28,7 @@ except ImportError:
 else:
     has_h5py = True
 
-from ._types import ndarray, array_like
+from ._types import ArrayType, array_like
 
 def matrix_ufunc(
     op: Callable,
@@ -37,7 +37,7 @@ def matrix_ufunc(
     with_diagonals: bool = False,
     npmod=np,
     save_errors=False
-) -> Union[ndarray, Tuple[ndarray, ndarray]]:
+) -> Union[ArrayType, Tuple[ArrayType, ArrayType]]:
     """Apply a unitary-invariant unary matrix operator to an array of normal matrices.
 
     The argument `mat` must be an array of normal (i.e. square diagonalizable) matrices in the last
@@ -94,7 +94,7 @@ def matrix_exp(
     with_diagonals: bool = False,
     npmod=np,
     save_errors=False
-) -> ndarray:
+) -> ArrayType:
     """`matrix_ufunc(exp, ...)`"""
     return matrix_ufunc(npmod.exp, mat, hermitian=hermitian, with_diagonals=with_diagonals,
                         npmod=npmod, save_errors=save_errors)
@@ -105,7 +105,7 @@ def matrix_angle(
     with_diagonals: bool = False,
     npmod=np,
     save_errors=False
-) -> ndarray:
+) -> ArrayType:
     """`matrix_ufunc(angle, ...)`"""
     return matrix_ufunc(npmod.angle, mat, hermitian=hermitian, with_diagonals=with_diagonals,
                         npmod=npmod, save_errors=save_errors)

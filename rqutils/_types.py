@@ -1,14 +1,15 @@
 from typing import Union, Sequence
+from numbers import Number
 
 import numpy as np
-ndarray = np.ndarray
+ArrayType = np.ndarray
 try:
     import jax.numpy as jnp
 except ImportError:
     pass
 else:
-    ndarray = Union[ndarray, jnp.ndarray]
+    ArrayType = Union[ArrayType, jnp.ndarray]
 
-array_like = Union[list, tuple, ndarray]
+array_like = Union[Number, Sequence[Number], ArrayType]
 
 MatrixDimension = Union[int, Sequence[int]]

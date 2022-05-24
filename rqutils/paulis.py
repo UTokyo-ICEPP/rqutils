@@ -139,7 +139,7 @@ except ImportError:
 else:
     has_jax = True
 
-from ._types import array_like, ndarray, MatrixDimension
+from ._types import ArrayType, array_like, MatrixDimension
 
 def paulis(dim: MatrixDimension) -> np.ndarray:
     r"""Return a list of generalized Pauli matrices of given dimension(s) as an array.
@@ -212,7 +212,7 @@ def components(
     matrix: array_like,
     dim: Optional[MatrixDimension] = None,
     npmod: ModuleType = np
-) -> ndarray:
+) -> ArrayType:
     r"""Return the Pauli decomposition coefficients :math:`\nu_{k_1 \dots k_n}` of the matrix.
 
     Args:
@@ -245,7 +245,7 @@ def compose(
     components: array_like,
     dim: Optional[MatrixDimension] = None,
     npmod: ModuleType = np
-) -> ndarray:
+) -> ArrayType:
     r"""Compose a matrix from the Pauli components.
 
     Args:
@@ -298,7 +298,7 @@ def truncate(
     components: array_like,
     reduced_dim: MatrixDimension,
     npmod: ModuleType = np
-) -> ndarray:
+) -> ArrayType:
     r"""Truncate a component array of a matrix into the components for a submatrix.
 
     The component array can have extra dimensions in front (e.g. time axis if this is a time series of components).
