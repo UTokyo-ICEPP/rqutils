@@ -20,6 +20,12 @@ import builtins
 from dataclasses import dataclass
 from enum import Enum
 import numpy as np
+try:
+    from IPython.display import Latex
+except ImportError:
+    has_ipython = False
+else:
+    has_ipython = True
 
 try:
     import scipy
@@ -52,20 +58,10 @@ else:
 from . import paulis
 from ._types import array_like, MatrixDimension
 
-class LaTeXRepr:
-    def __init__(self, expr):
-        self.expr = expr
 
-    def __str__(self):
-        return self.expr
-
-    def __repr__(self):
-        return f'LaTeXRepr("{self.expr}")'
-
-    def _repr_latex_(self):
-        return self.expr
-
-PrintReturnType = Union[str, LaTeXRepr]
+PrintReturnType = str
+if has_ipython:
+    PrintReturnType = Union[PrintReturnType, Latex]
 if has_mpl:
     PrintReturnType = Union[PrintReturnType, mpl.figure.Figure]
 
@@ -161,8 +157,8 @@ def qprint(
 
     if output == 'text':
         return pobj
-    elif output == 'latex':
-        return LaTeXRepr(pobj.latex())
+    elif output == 'latex' and has_ipython:
+        return Latex(pobj.latex())
     elif output == 'mpl':
         return pobj.mpl()
     else:
