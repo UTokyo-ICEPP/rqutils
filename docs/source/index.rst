@@ -9,7 +9,7 @@ rqutils: Random quantum utilities
 .. toctree::
    :maxdepth: 2
    :caption: Contents:
-   
+
    API References <apidocs/rqutils>
 
 

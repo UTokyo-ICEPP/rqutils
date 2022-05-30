@@ -74,7 +74,7 @@ def qprint(
     terms_per_row: int = 0,
     amp_format: str = '.3f',
     phase_format: str = '.2f',
-    epsilon: float = 1.e-6,
+    amp_cutoff: float = 1.e-6,
     lhs_label: Optional[str] = None,
     dim: Optional[array_like] = None,
     binary: bool = False,
@@ -107,7 +107,7 @@ def qprint(
         terms_per_row: Number of terms to show per row.
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
-        epsilon: Numerical cutoff for ignoring amplitudes (relative to max) and phase (absolute).
+        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times this value.
         lhs_label: If not None, prepend 'label = ' to the printout.
         dim: Specification of the dimensions of the subsystems. For `fmt='pauli'`, used only when
             `qobj` is a square matrix or a 1D array.
@@ -133,7 +133,7 @@ def qprint(
                             terms_per_row=terms_per_row,
                             amp_format=amp_format,
                             phase_format=phase_format,
-                            epsilon=epsilon,
+                            amp_cutoff=amp_cutoff,
                             lhs_label=lhs_label,
                             dim=dim,
                             binary=binary)
@@ -146,7 +146,7 @@ def qprint(
                            terms_per_row=terms_per_row,
                            amp_format=amp_format,
                            phase_format=phase_format,
-                           epsilon=epsilon,
+                           amp_cutoff=amp_cutoff,
                            lhs_label=lhs_label,
                            dim=dim,
                            symbol=symbol,
@@ -175,12 +175,12 @@ class QPrintBase:
         qobj: Input quantum object.
         amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in LaTeX).
         phase_norm: Specification of the normalization of phases by (numeric devisor, unit in LaTeX).
-        global_phase: Specification of the phase to factor out. Give a numeric offset or 'mean'.
+        global_phase: Specification of the phase to factor out. Give a numeric offset or ``'mean'``.
         terms_per_row: Number of terms to show per row.
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
-        epsilon: Numerical cutoff for ignoring amplitudes (relative to max) and phase (absolute).
-        lhs_label: If not None, prepend 'label = ' to the printout.
+        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times this value.
+        lhs_label: If not None, prepends ``'lhs_label = '`` to the printout.
         dim: Specification of the dimensions of the subsystems.
     """
 
@@ -201,7 +201,7 @@ class QPrintBase:
         terms_per_row: int = 0,
         amp_format: str = '.3f',
         phase_format: str = '.2f',
-        epsilon: float = 1.e-6,
+        amp_cutoff: float = 1.e-6,
         lhs_label: Optional[str] = None,
         dim: Optional[MatrixDimension] = None
     ):
@@ -211,7 +211,7 @@ class QPrintBase:
         self.terms_per_row = terms_per_row
         self.amp_format = amp_format
         self.phase_format = phase_format
-        self.epsilon = epsilon
+        self.amp_cutoff = amp_cutoff
         self.lhs_label = lhs_label
 
         if isinstance(dim, int):
@@ -270,7 +270,7 @@ class QPrintBase:
         else:
             return expr
 
-    def mpl(self):
+    def mpl(self, ax: Optional[mpl.axes.Axes] = None):
         if not has_mpl:
             raise RuntimeError('Matplotlib is not available')
 
@@ -285,17 +285,22 @@ class QPrintBase:
         if lhs is not None:
             lines[0] = f'{lhs} = {lines[0]}'
 
-        fig, ax = plt.subplots(1, figsize=[10., 0.5 * len(lines)])
+        if ax is None:
+            fig, ax = plt.subplots(1, figsize=[10., 0.5 * len(lines)])
+        else:
+            fig = None
+
         ax.axis('off')
 
         num_rows = len(lines)
         for irow, line in enumerate(lines):
             ax.text(0.5, 1. / num_rows * (num_rows - irow - 1), f'${line}$', fontsize='x-large', ha='right')
 
-        if mpl.get_backend() in MATPLOTLIB_INLINE_BACKENDS:
-            plt.close(fig)
+        if fig is not None:
+            if mpl.get_backend() in MATPLOTLIB_INLINE_BACKENDS:
+                plt.close(fig)
 
-        return fig
+            return fig
 
     def _process(self) -> Tuple[int, str, str, List[List[Term]]]:
         """Compose a list of QPrintTerms."""
@@ -318,7 +323,7 @@ class QPrintBase:
                 global_amp = self.amp_norm[1]
             else:
                 absamp /= self.amp_norm
-                if np.isclose(np.round(self.amp_norm), self.amp_norm, rtol=self.epsilon):
+                if np.isclose(np.round(self.amp_norm), self.amp_norm):
                     global_amp = f'{np.round(self.amp_norm)}'
                 else:
                     global_amp = amp_template.format(self.amp_norm)
@@ -327,7 +332,7 @@ class QPrintBase:
             global_amp = ''
 
         rounded_amp = np.round(absamp).astype(int)
-        amp_is_int = np.isclose(rounded_amp, absamp, rtol=self.epsilon)
+        amp_is_int = np.isclose(rounded_amp, absamp)
         rounded_amp = np.where(amp_is_int, rounded_amp, -1)
 
         # Shift and normalize the phases and identify integral values
@@ -349,14 +354,14 @@ class QPrintBase:
         def normalize_phase(phase):
             reduced_phase = phase / (np.pi / 2.)
             axis_proj = np.round(reduced_phase).astype(int)
-            on_axis = np.isclose(axis_proj, reduced_phase, rtol=0., atol=self.epsilon)
+            on_axis = np.isclose(axis_proj, reduced_phase)
             axis_proj = np.where(on_axis, axis_proj, -1)
 
             if self.phase_norm is not None:
                 phase /= self.phase_norm[0]
 
             rounded_phase = np.round(phase).astype(int)
-            phase_is_int = np.isclose(rounded_phase, phase, rtol=0., atol=self.epsilon)
+            phase_is_int = np.isclose(rounded_phase, phase)
             rounded_phase = np.where(phase_is_int, rounded_phase, -1)
 
             return phase, axis_proj, rounded_phase
@@ -391,8 +396,8 @@ class QPrintBase:
 
         ## Compose the terms
 
-        # Show only terms with absamp < absamp * epsilon
-        amp_atol = np.amax(absamp) * self.epsilon
+        # Show only terms with absamp < max(absamp) * amp_cutoff
+        amp_atol = np.amax(absamp) * self.amp_cutoff
         amp_is_zero = np.isclose(np.zeros_like(absamp), absamp, atol=amp_atol)
         term_indices = list(zip(*np.logical_not(amp_is_zero).nonzero())) # convert into list of tuples
 
@@ -524,7 +529,7 @@ class QPrintBraKet(QPrintBase):
         terms_per_row: Number of terms to show per row.
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
-        epsilon: Numerical cutoff for ignoring amplitudes (relative to max) and phase (absolute).
+        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times this value.
         lhs_label: If not None, prepend 'label = ' to the printout.
         binary: Show bra and ket indices in binary.
     """
@@ -542,7 +547,7 @@ class QPrintBraKet(QPrintBase):
         terms_per_row: int = 0,
         amp_format: str = '.3f',
         phase_format: str = '.2f',
-        epsilon: float = 1.e-6,
+        amp_cutoff: float = 1.e-6,
         lhs_label: Optional[str] = None,
         dim: Optional[MatrixDimension] = None,
         binary: bool = False
@@ -555,7 +560,7 @@ class QPrintBraKet(QPrintBase):
             terms_per_row=terms_per_row,
             amp_format=amp_format,
             phase_format=phase_format,
-            epsilon=epsilon,
+            amp_cutoff=amp_cutoff,
             lhs_label=lhs_label,
             dim=dim)
 
@@ -658,7 +663,7 @@ class QPrintPauli(QPrintBase):
         terms_per_row: Number of terms to show per row.
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
-        epsilon: Numerical cutoff for ignoring amplitudes (relative to max) and phase (absolute).
+        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times this value.
         lhs_label: If not None, prepend 'label = ' to the printout.
         dim: Specification of the dimensions of the subsystems. Used only when `qobj` is a square
             matrix or a 1D array.
@@ -674,7 +679,7 @@ class QPrintPauli(QPrintBase):
         terms_per_row: int = 0,
         amp_format: str = '.3f',
         phase_format: str = '.2f',
-        epsilon: float = 1.e-6,
+        amp_cutoff: float = 1.e-6,
         lhs_label: Optional[str] = None,
         dim: Optional[MatrixDimension] = None,
         symbol: Optional[Union[str, Sequence[str]]] = None,
@@ -688,7 +693,7 @@ class QPrintPauli(QPrintBase):
             terms_per_row=terms_per_row,
             amp_format=amp_format,
             phase_format=phase_format,
-            epsilon=epsilon,
+            amp_cutoff=amp_cutoff,
             lhs_label=lhs_label,
             dim=dim)
 
