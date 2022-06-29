@@ -21,11 +21,12 @@ from dataclasses import dataclass
 from enum import Enum
 import numpy as np
 try:
-    from IPython.display import Latex
-except ImportError:
+    get_ipython()
+except NameError:
     has_ipython = False
 else:
     has_ipython = True
+    from IPython.display import Latex
 
 try:
     import scipy

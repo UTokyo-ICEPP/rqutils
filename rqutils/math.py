@@ -17,6 +17,7 @@ Math API
 """
 
 from typing import Callable, Tuple, Any, Union
+from types import ModuleType
 import sys
 import tempfile
 import pickle
@@ -35,7 +36,7 @@ def matrix_ufunc(
     mat: array_like,
     hermitian: Union[int, bool] = 0,
     with_diagonals: bool = False,
-    npmod=np,
+    npmod: ModuleType = np,
     save_errors=False
 ) -> Union[ArrayType, Tuple[ArrayType, ArrayType]]:
     """Apply a unitary-invariant unary matrix operator to an array of normal matrices.
@@ -44,11 +45,32 @@ def matrix_ufunc(
     two dimensions. This function unitary-diagonalizes the matrices, applies `op` to the diagonals,
     and inverts the diagonalization.
 
+    **Diagonalization and gradient**
+
+    When using this function with an autodiff library (e.g. JAX), the gradient diverges when an input parameter
+    controls off-diagonal elements of ``mat`` but ``mat`` is diagonal. Use an alternative function (that is
+    hopefully available) in such cases:
+
+    .. code-block:: python
+
+        # Reshape the matrix to gather all off-diagonal elements to a block ([:, 1:])
+        mat_dim = mat.shape[-1]
+        diag_checker = mat.reshape(-1, mat_dim ** 2)
+        # The very last element is a part of diagonal -> can ignore for this purpose
+        diag_checker = diag_checker[:, :-1].reshape(-1, mat_dim - 1, mat_dim + 1)
+        is_diagonal = ~jnp.any(diag_checker[:, :, 1:], axis=(1, 2))
+        has_diagonal = jnp.any(is_diagonal)
+
+        result = jax.lax.cond(has_diagonal,
+                              alternative_X,
+                              functools.partial(matrix_ufunc, X),
+                              mat)
+
     Args:
-        op: Unary operator to be applied to the diagonals of `mat`.
+        op: Unary operator to be applied to the diagonals of ``mat``.
         mat: Array of normal matrices (shape (..., n, n)). No check on normality is performed.
-        hermitian: 1 or True -> `mat` is Hermitian, -1 -> `mat` is anti-hermitian, 0 or False -> otherwise
-        with_diagonals: If True, also return the array `op(eigenvalues)`.
+        hermitian: 1 or True -> ``mat`` is Hermitian, -1 -> ``mat`` is anti-hermitian, 0 or False -> otherwise
+        with_diagonals: If True, also return the array ``op(eigenvalues)``.
 
     Returns:
         An array corresponding to `op(mat)`. If `diagonals==True`, another array corresponding to `op(eigvals)`.
@@ -92,7 +114,7 @@ def matrix_exp(
     mat: array_like,
     hermitian: Union[int, bool] = 0,
     with_diagonals: bool = False,
-    npmod=np,
+    npmod: ModuleType = np,
     save_errors=False
 ) -> ArrayType:
     """`matrix_ufunc(exp, ...)`"""
@@ -103,7 +125,7 @@ def matrix_angle(
     mat: array_like,
     hermitian: Union[int, bool] = 0,
     with_diagonals: bool = False,
-    npmod=np,
+    npmod: ModuleType = np,
     save_errors=False
 ) -> ArrayType:
     """`matrix_ufunc(angle, ...)`"""

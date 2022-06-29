@@ -127,7 +127,7 @@ Pauli Matrices API
    labels
 """
 
-from typing import Sequence, Optional, Union
+from typing import Sequence, Optional, Union, Tuple
 from types import ModuleType
 import string
 import numpy as np
@@ -206,6 +206,21 @@ def paulis(dim: MatrixDimension) -> np.ndarray:
         shape = np.concatenate((np.square(dim_array), np.prod(np.repeat(dim_array[None, :], 2, axis=0), axis=1)))
 
         return np.einsum(indices, *subsystems).reshape(*shape) / (2 ** (num_sub - 1))
+
+
+def paulis_shape(dim: MatrixDimension) -> Tuple[int, ...]:
+    """Return just the shape of the paulis array for the given dimension.
+
+    Args:
+        dim: Dimension(s) of the Pauli matrices.
+
+    Returns:
+        Shape of the array obtained by ``paulis(dim)``.
+    """
+    if isinstance(dim, int):
+        dim = (dim,)
+
+    return tuple(np.square(dim)) + (tuple(np.prod(dim, keepdims=True)) * 2)
 
 
 def components(
@@ -364,28 +379,48 @@ def truncate(
     return components[(...,) + slices]
 
 
-def symmetry(dim: int):
+def symmetry(dim: MatrixDimension):
     r"""Return the symmetry (-1, 0, 1) of the Pauli matrices.
 
     Args:
         dim: Dimension of the Pauli matrices.
 
     Returns:
-        An 1D integer array with entries -1, 0, 1 depending on whether the corresponding Pauli matrix
+        An integer array with entries -1, 0, 1 depending on whether the corresponding Pauli matrix
         is antisymmetric, diagonal, or symmetric.
     """
+    if isinstance(dim, int):
+        dim = (dim,)
 
-    symmetry = np.zeros(dim ** 2, dtype=int)
+    subsystems = []
 
-    ip = 1
-    for isub in range(1, dim):
-        for irow in range(isub):
-            symmetry[ip] = 1
+    for pauli_dim in dim:
+        symmetry = np.zeros(pauli_dim ** 2, dtype=int)
+        ip = 1
+        for isub in range(1, pauli_dim):
+            for _ in range(isub):
+                symmetry[ip] = 1
+                ip += 1
+                symmetry[ip] = -1
+                ip += 1
+
             ip += 1
-            symmetry[ip] = -1
-            ip += 1
 
-        ip += 1
+        subsystems.append(symmetry)
+
+    # Compose symmetry combinations
+    # Truth table for two subsystems
+    #     -1  0  1
+    #   ----------
+    # -1|  1 -1 -1
+    #  0| -1  0  1
+    #  1| -1  1  1
+
+    symmetry = subsystems[0]
+    for subsystem in subsystems[1:]:
+        symprod = symmetry[..., None] * subsystem
+        symsum = symmetry[..., None] + subsystem
+        symmetry = symprod + np.where(symprod == 0, symsum, 0)
 
     return symmetry
 
