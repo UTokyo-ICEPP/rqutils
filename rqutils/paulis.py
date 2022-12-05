@@ -154,35 +154,52 @@ def paulis(dim: MatrixDimension) -> np.ndarray:
     if isinstance(dim, int):
         dim = (dim,)
 
+    if not isinstance(dim, tuple):
+        dim = tuple(dim)
+
+    try:
+        return _pauli_products[dim]
+    except KeyError:
+        pass
+
     subsystems = []
 
     for pauli_dim in dim:
-        # Compose the unnormalized matrices
-        matrices = np.zeros((pauli_dim ** 2, pauli_dim, pauli_dim), dtype=complex)
-        matrices[0] = np.diag(np.ones(pauli_dim))
-        ip = 1
-        for isub in range(1, pauli_dim):
-            for irow in range(isub):
-                matrices[ip, irow, isub] = 1.
-                matrices[ip, isub, irow] = 1.
-                ip += 1
-                matrices[ip, irow, isub] = -1.j
-                matrices[ip, isub, irow] = 1.j
+        try:
+            matrices = _paulis[pauli_dim].copy()
+        except KeyError:
+            # Compose the unnormalized matrices
+            matrices = np.zeros((pauli_dim ** 2, pauli_dim, pauli_dim), dtype=complex)
+
+            matrices[0] = np.diag(np.ones(pauli_dim))
+            ip = 1
+            for isub in range(1, pauli_dim):
+                for irow in range(isub):
+                    matrices[ip, irow, isub] = 1.
+                    matrices[ip, isub, irow] = 1.
+                    ip += 1
+                    matrices[ip, irow, isub] = -1.j
+                    matrices[ip, isub, irow] = 1.j
+                    ip += 1
+
+                matrices[ip, :isub + 1, :isub + 1] = np.diag(np.array([1.] * isub + [-isub]))
                 ip += 1
 
-            matrices[ip, :isub + 1, :isub + 1] = np.diag(np.array([1.] * isub + [-isub]))
-            ip += 1
+            # Normalization
+            norm = np.trace(np.matmul(matrices, matrices), axis1=1, axis2=2)
+            matrices *= np.sqrt(2. / norm)[:, None, None]
 
-        # Normalization
-        norm = np.trace(np.matmul(matrices, matrices), axis1=1, axis2=2)
-        matrices *= np.sqrt(2. / norm)[:, None, None]
+            # Make the matrix immutable
+            matrices.setflags(write=False)
+
+            _paulis[pauli_dim] = matrices
 
         subsystems.append(matrices)
 
     num_sub = len(dim)
 
     if num_sub == 1:
-        return subsystems[0]
+        matrix_array = subsystems[0]
 
     else:
         # Compose Pauli products
@@ -191,7 +208,7 @@ def paulis(dim: MatrixDimension) -> np.ndarray:
         # be and cf are reshaped into 1 dimension each
         chars = string.ascii_letters
         if num_sub * 3 > len(chars):
-            raise NotImplemented('Too many subsystems - need an implementation using recursive np.kron')
+            raise NotImplementedError('Too many subsystems - need an implementation using recursive np.kron')
 
         indices_in = []
         indices_out = [''] * 3
@@ -205,7 +222,17 @@ def paulis(dim: MatrixDimension) -> np.ndarray:
         dim_array = np.asarray(dim)
         shape = np.concatenate((np.square(dim_array), np.prod(np.repeat(dim_array[None, :], 2, axis=0), axis=1)))
 
-        return np.einsum(indices, *subsystems).reshape(*shape) / (2 ** (num_sub - 1))
+        matrix_array = np.einsum(indices, *subsystems).reshape(*shape) / (2 ** (num_sub - 1))
+
+        matrix_array.setflags(write=False)
+
+    _pauli_products[dim] = matrix_array
+
+    return matrix_array
+
+
+_paulis = dict()
+_pauli_products = dict()
 
 
 def paulis_shape(dim: MatrixDimension) -> Tuple[int, ...]:
@@ -297,6 +324,11 @@ def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
     Returns:
         Projection vector :math:`\vec{v}` that gives :math:`\bar{\nu}_0 = \vec{v} \cdot \vec{\nu}`.
     """
+    try:
+        return _l0_projectors[(reduced_dim, original_dim)]
+    except KeyError:
+        pass
+
     if reduced_dim > original_dim:
         raise ValueError('Reduced dim greater than original dim')
 
@@ -306,7 +338,14 @@ def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
     for d in range(reduced_dim + 1, original_dim + 1):
         projector[d ** 2 - 1] = np.sqrt(reduced_dim / d / (d - 1))
 
+    projector.setflags(write=False)
+
+    _l0_projectors[(reduced_dim, original_dim)] = projector
+
     return projector
+
+
+_l0_projectors = dict()
 
 
 def truncate(
@@ -346,19 +385,28 @@ def truncate(
     original_dim = npmod.around(npmod.sqrt(original_shape)).astype(int)
 
     def project_dim(idim, components):
-        # Construct a matrix (v, diag([1] * reduced)[1:], diag([0] * truncated))^T
-        projector = l0_projector(reduced_dim[idim], original_dim[idim])
-        diag = npmod.concatenate((npmod.ones(reduced_shape[idim]),
-                                  npmod.zeros(original_shape[idim] - reduced_shape[idim])))
-        projector = npmod.concatenate((projector[None, :], npmod.diag(diag)[1:]), axis=0)
+        # Construct the projection matrix
+        # Example: original_dim = 3, reduced_dim = 2 (original_shape = 9, reduced_shape = 4):
+        # | p0  0  0 p3  0  0  0  0 p8
+        # |  0  1  0  0  0  0  0  0  0
+        # |  0  0  1  0  0  0  0  0  0
+        # |  0  0  0  1  0  0  0  0  0
+
+        od = original_dim[idim] # Dimension of the Paulis
+        os = original_shape[idim] # Number of Paulis
+        rd = reduced_dim[idim]
+        rs = reduced_shape[idim]
+
+        projector_0 = l0_projector(rd, od)[None, :]
+        projector_1 = npmod.concatenate((npmod.eye(rs)[1:],
+                                         npmod.zeros((rs - 1, os - rs))),
+                                        axis=1)
+        projector = npmod.concatenate((projector_0, projector_1), axis=0)
 
         projected = npmod.tensordot(projector, components, (1, first_component_axis + idim))
 
         # After tensordot, the projected axis is at position 0
-        transpose = list(range(1, len(components.shape)))
-        transpose.insert(first_component_axis + idim, 0)
-
-        return projected.transpose(transpose)
+        return npmod.moveaxis(projected, 0, first_component_axis + idim)
 
     if has_jax and npmod is jnp:
         def loop_body(idim, components):
@@ -374,9 +422,7 @@ def truncate(
             if reduced_dim[idim] != original_dim[idim]:
                 components = project_dim(idim, components)
 
-    slices = tuple(slice(shape) for shape in reduced_shape)
-
-    return components[(...,) + slices]
+    return components
 
 
 def symmetry(dim: MatrixDimension):
@@ -392,19 +438,33 @@ def symmetry(dim: MatrixDimension):
     if isinstance(dim, int):
         dim = (dim,)
 
+    if not isinstance(dim, tuple):
+        dim = tuple(dim)
+
+    try:
+        return _symmetries[dim]
+    except KeyError:
+        pass
+
     subsystems = []
 
     for pauli_dim in dim:
-        symmetry = np.zeros(pauli_dim ** 2, dtype=int)
-        ip = 1
-        for isub in range(1, pauli_dim):
-            for _ in range(isub):
-                symmetry[ip] = 1
-                ip += 1
-                symmetry[ip] = -1
+        try:
+            symmetry = _pauli_symmetry[pauli_dim]
+        except KeyError:
+            symmetry = np.zeros(pauli_dim ** 2, dtype=int)
+            ip = 1
+            for isub in range(1, pauli_dim):
+                for _ in range(isub):
+                    symmetry[ip] = 1
+                    ip += 1
+                    symmetry[ip] = -1
+                    ip += 1
+
                 ip += 1
 
-            ip += 1
+            symmetry.setflags(write=False)
+            _pauli_symmetry[pauli_dim] = symmetry
 
         subsystems.append(symmetry)
 
@@ -422,12 +482,19 @@ def symmetry(dim: MatrixDimension):
         symsum = symmetry[..., None] + subsystem
         symmetry = symprod + np.where(symprod == 0, symsum, 0)
 
+    symmetry.setflags(write=False)
+    _symmetries[dim] = symmetry
+
     return symmetry
+
+
+_symmetries = dict()
+_pauli_symmetry = dict()
 
 
 def labels(
     dim: MatrixDimension,
-    symbol: Optional[Union[str, Sequence[str]]] = None,
+    symbol: Optional[Union[str, Sequence[str], Sequence[Sequence[str]]]] = None,
     delimiter: str = '',
     norm: bool = True,
     fmt: str = 'latex'
@@ -464,11 +531,14 @@ def labels(
                 if fmt == 'text':
                     labels = list(f'λ{i}' for i in range(pauli_dim ** 2))
                 else:
-                    labels = list(fr'\lambda_{{{i}}}' for i in range(pauli_dim ** 2))
+                    labels = list(fr'{{\lambda_{{{i}}}}}' for i in range(pauli_dim ** 2))
             else:
                 labels = list(str(i) for i in range(pauli_dim ** 2))
+        elif isinstance(sym, str):
+            labels = list(f'{{{sym}_{{{i}}}}}' for i in range(pauli_dim ** 2))
         else:
-            labels = list(f'{sym}_{{{i}}}' for i in range(pauli_dim ** 2))
+            assert len(sym) == pauli_dim ** 2, 'Invalid length of the symbols array'
+            labels = list(f'{{{s}}}' for s in sym)
 
         out = np.char.add(np.repeat(out[..., None], pauli_dim ** 2, axis=-1), labels)
 
