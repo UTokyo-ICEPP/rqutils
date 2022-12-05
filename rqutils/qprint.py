@@ -20,13 +20,6 @@ import builtins
 from dataclasses import dataclass
 from enum import Enum
 import numpy as np
-try:
-    get_ipython()
-except NameError:
-    has_ipython = False
-else:
-    has_ipython = True
-    from IPython.display import Latex
 
 try:
     import scipy
@@ -61,8 +54,6 @@ from ._types import array_like, MatrixDimension
 
 
 PrintReturnType = str
-if has_ipython:
-    PrintReturnType = Union[PrintReturnType, Latex]
 if has_mpl:
     PrintReturnType = Union[PrintReturnType, mpl.figure.Figure]
 
@@ -75,13 +66,13 @@ def qprint(
     terms_per_row: int = 0,
     amp_format: str = '.3f',
     phase_format: str = '.2f',
-    amp_cutoff: float = 1.e-6,
+    amp_cutoff: float = 5.e-4,
     lhs_label: Optional[str] = None,
     dim: Optional[array_like] = None,
     binary: bool = False,
-    symbol: Optional[Union[str, Sequence[str]]] = None,
+    symbol: Optional[Union[str, Sequence[str], Sequence[Sequence[str]]]] = None,
     delimiter: str = '',
-    output: Optional[str] = None
+    output: str = 'latex'
 ) -> PrintReturnType:
     """Pretty-print a quantum object.
 
@@ -92,11 +83,13 @@ def qprint(
     - `'pauli'`: For an input representing a square matrix (shape `(d1*d2*..., d1*d2*...)`) or a
       components array (shape `(d1**2, d2**2, ...)`). Argument `dim` is required for the matrix
       interpretation.
+    - `'matrix'`: For a square matrix input. Arguments `dim`, `binary`, `symbol`, and `delimiter`
+      are ignored.
 
     Three printing formats are supported:
 
     - `'text'`: Print text to stdout.
-    - `'latex'`: Return an object processable by IPython into a typeset LaTeX expression.
+    - `'latex'`: Return a LaTeX string.
     - `'mpl'`: Return a matplotlib figure.
 
     Args:
@@ -120,12 +113,6 @@ def qprint(
     Returns:
         Object to be printed.
     """
-    if output is None:
-        if hasattr(builtins, '__IPYTHON__'):
-            output = 'latex'
-        else:
-            output = 'text'
-
     if fmt == 'braket':
         pobj = QPrintBraKet(qobj=qobj,
                             amp_norm=amp_norm,
@@ -138,6 +125,7 @@ def qprint(
                             lhs_label=lhs_label,
                             dim=dim,
                             binary=binary)
+        env = 'split'
 
     elif fmt == 'pauli':
         pobj = QPrintPauli(qobj=qobj,
@@ -152,14 +140,26 @@ def qprint(
                            dim=dim,
                            symbol=symbol,
                            delimiter=delimiter)
+        env = 'split'
+
+    elif fmt == 'matrix':
+        pobj = QPrintMatrix(qobj=qobj,
+                            amp_norm=amp_norm,
+                            phase_norm=phase_norm,
+                            global_phase=global_phase,
+                            amp_format=amp_format,
+                            phase_format=phase_format,
+                            amp_cutoff=amp_cutoff,
+                            lhs_label=lhs_label)
+        env = None
 
     else:
         raise NotImplementedError(f'qprint with format {fmt} not implemented')
 
     if output == 'text':
         return pobj
-    elif output == 'latex' and has_ipython:
-        return Latex(pobj.latex())
+    elif output == 'latex':
+        return pobj.latex(env)
     elif output == 'mpl':
         return pobj.mpl()
     else:
@@ -235,7 +235,10 @@ class QPrintBase:
         if pre_expr:
             expr += f'{pre_expr} ('
 
-        expr += '\n'.join(lines)
+        indentation = ' ' * len(expr)
+
+        expr += f'{lines[0]}\n'
+        expr += '\n'.join((indentation + l) for l in lines[1:])
 
         if pre_expr:
             expr += ')'
@@ -253,7 +256,7 @@ class QPrintBase:
                 lines[0] += r' \right.'
                 lines[-1] = r'\left. ' + lines[-1]
 
-        if len(lines) > 1:
+        if env == 'split' and len(lines) > 1:
             lines = list(f'& {line}' for line in lines)
 
         if pre_expr:
@@ -434,6 +437,9 @@ class QPrintBase:
             raise NotImplementedError(f'qprint not implemented for {type(qobj)}')
 
         return qobj, data
+
+    def _add_labels(self, terms, mode):
+        pass
 
     def _make_lines(self, mode) -> list:
         global_sign, global_amp, global_phase, terms = self._process()
@@ -683,7 +689,7 @@ class QPrintPauli(QPrintBase):
         amp_cutoff: float = 1.e-6,
         lhs_label: Optional[str] = None,
         dim: Optional[MatrixDimension] = None,
-        symbol: Optional[Union[str, Sequence[str]]] = None,
+        symbol: Optional[Union[str, Sequence[str], Sequence[Sequence[str]]]] = None,
         delimiter: str = ''
     ):
         super().__init__(
@@ -744,6 +750,112 @@ class QPrintPauli(QPrintBase):
                 term.label = f'*{labels[term.index]}'
             else:
                 term.label = str(labels[term.index])
+
+    def _format_lhs(self, mode) -> Union[str, None]:
+        return self.lhs_label
+
+
+class QPrintMatrix(QPrintBase):
+    """Helper class to compose an expression for a Pauli decomposition from a matrix or components.
+
+    Args:
+        qobj: A square matrix (shape `(d1*d2*..., d1*d2*...)`), a structured components array
+            (shape `(d1**2, d2**2, ...)`), or a fully flattened components array. Argument `dim` is
+            required in the first and third cases.
+        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in LaTeX).
+        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in LaTeX).
+        global_phase: Specification of the phase to factor out. Give a numeric offset or 'mean'.
+        terms_per_row: Number of terms to show per row.
+        amp_format: Format for the numerical value of the amplitude absolute values.
+        phase_format: Format for the numerical value of the phases.
+        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times this value.
+        lhs_label: If not None, prepend 'label = ' to the printout.
+        dim: Specification of the dimensions of the subsystems. Used only when `qobj` is a square
+            matrix or a 1D array.
+        symbol: Pauli matrix symbols.
+        delimiter: Pauli product delimiter.
+    """
+    def __init__(
+        self,
+        qobj: Any,
+        amp_norm: Optional[Union[Number, Tuple[Number, str]]] = None,
+        phase_norm: Optional[Tuple[Number, str]] = (np.pi, 'π'),
+        global_phase: Optional[Union[Number, str]] = None,
+        amp_format: str = '.3f',
+        phase_format: str = '.2f',
+        amp_cutoff: float = 1.e-6,
+        lhs_label: Optional[str] = None
+    ):
+        super().__init__(
+            qobj=qobj,
+            amp_norm=amp_norm,
+            phase_norm=phase_norm,
+            global_phase=global_phase,
+            amp_format=amp_format,
+            phase_format=phase_format,
+            amp_cutoff=amp_cutoff,
+            lhs_label=lhs_label)
+
+    def _qobj_data(self, qobj):
+        # Convert all qobj to a square matrix
+
+        qobj, data = super()._qobj_data(qobj)
+
+        if not (len(qobj.shape) == 2 and qobj.shape[0] == qobj.shape[1]):
+            raise ValueError('qobj is not a square matrix')
+
+        return qobj, data
+
+    def _make_lines(self, mode) -> list:
+        global_sign, global_amp, global_phase, terms = self._process()
+
+        matrix_dim = self._data.shape[0]
+
+        pre_expr = ''
+
+        if global_sign == -1:
+            pre_expr += '-'
+
+        pre_expr += global_amp
+        pre_expr += self._format_phase(global_phase, mode)
+
+        rows = list((['0'] * matrix_dim) for _ in range(matrix_dim))
+
+        for term in terms:
+            irow, icolumn = term.index
+
+            element = ''
+
+            if term.sign == -1:
+                element += '-'
+
+            if mode == 'text' or term.amp != '1':
+                element += term.amp
+
+            element += self._format_phase(term.phase, mode)
+
+            rows[irow][icolumn] = element
+
+        lines = list()
+
+        if mode == 'latex':
+            for row in rows:
+                lines.append(' & '.join(row))
+
+            lines[0] = r'\begin{pmatrix}' + lines[0]
+            lines[-1] += r'\end{pmatrix}'
+        else:
+            max_col_width = max(max(len(element) for element in row) for row in rows)
+            template = '{:>%ds}' % max_col_width
+            for row in rows:
+                lines.append(' '.join(template.format(element) for element in row))
+
+            lines[0] = '⎛' + lines[0] + '⎞'
+            for iline in range(1, matrix_dim - 1):
+                lines[iline] = '⎜' + lines[iline] + '⎟'
+            lines[-1] = '⎝' + lines[-1] + '⎠'
+
+        return pre_expr, lines
 
     def _format_lhs(self, mode) -> Union[str, None]:
         return self.lhs_label
