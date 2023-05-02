@@ -131,6 +131,7 @@ from typing import Sequence, Optional, Union, Tuple
 from types import ModuleType
 import string
 import numpy as np
+from scipy.sparse import csr_array
 try:
     import jax
     import jax.numpy as jnp
@@ -141,11 +142,12 @@ else:
 
 from ._types import ArrayType, array_like, MatrixDimension
 
-def paulis(dim: MatrixDimension) -> np.ndarray:
-    r"""Return a list of generalized Pauli matrices of given dimension(s) as an array.
+def paulis(dim: MatrixDimension, sparse: bool = False) -> Union[np.ndarray, Tuple[csr_array]]:
+    r"""Return an array of generalized Pauli matrices or matrix products of given dimension(s).
 
     Args:
         dim: Dimension(s) of the Pauli matrices.
+        sparse: Whether to return the matrices as an array (dtype=object) of CSR arrays.
 
     Returns:
         An array of Pauli (product) matrices as an array. For `dim=(d1, d2, ...)`, the shape of
@@ -153,53 +155,23 @@ def paulis(dim: MatrixDimension) -> np.ndarray:
     """
     if isinstance(dim, int):
         dim = (dim,)
-
-    if not isinstance(dim, tuple):
+    elif not isinstance(dim, tuple):
         dim = tuple(dim)
 
+    if len(dim) == 1:
+        return pauli_matrices(dim[0], sparse=sparse)
+
     try:
-        return _pauli_products[dim]
+        return _pauli_products[(dim, sparse)].copy()
     except KeyError:
         pass
 
-    subsystems = []
+    subsystems = list(pauli_matrices(d, sparse=sparse) for d in dim)
 
-    for pauli_dim in dim:
-        try:
-            matrices = _paulis[pauli_dim].copy()
-        except KeyError:
-            # Compose the unnormalized matrices
-            matrices = np.zeros((pauli_dim ** 2, pauli_dim, pauli_dim), dtype=complex)
+    num_sub = len(subsystems)
 
-            matrices[0] = np.diag(np.ones(pauli_dim))
-            ip = 1
-            for isub in range(1, pauli_dim):
-                for irow in range(isub):
-                    matrices[ip, irow, isub] = 1.
-                    matrices[ip, isub, irow] = 1.
-                    ip += 1
-                    matrices[ip, irow, isub] = -1.j
-                    matrices[ip, isub, irow] = 1.j
-                    ip += 1
-
-                matrices[ip, :isub + 1, :isub + 1] = np.diag(np.array([1.] * isub + [-isub]))
-                ip += 1
-
-            # Normalization
-            norm = np.trace(np.matmul(matrices, matrices), axis1=1, axis2=2)
-            matrices *= np.sqrt(2. / norm)[:, None, None]
-
-            # Make the matrix immutable
-            matrices.setflags(write=False)
-
-            _paulis[pauli_dim] = matrices
-
-        subsystems.append(matrices)
-
-    num_sub = len(dim)
-
-    if num_sub == 1:
-        matrix_array = subsystems[0]
+    if sparse:
+        raise NotImplementedError('Need an hour')
 
     else:
         # Compose Pauli products
@@ -224,15 +196,84 @@ def paulis(dim: MatrixDimension) -> np.ndarray:
 
         matrix_array = np.einsum(indices, *subsystems).reshape(*shape) / (2 ** (num_sub - 1))
 
-        matrix_array.setflags(write=False)
+    matrix_array.setflags(write=False)
 
-    _pauli_products[dim] = matrix_array
+    _pauli_products[(dim, sparse)] = matrix_array
 
     return matrix_array
 
-
-_paulis = dict()
 _pauli_products = dict()
+
+
+def pauli_matrices(dim: int, sparse: bool = False):
+    """Return a set of Pauli matrices of a given dimension.
+
+    Args:
+        dim: Dimension of the matrices.
+        sparse: Whether to return the matrices as an array (dtype=object) of CSR arrays.
+    """
+    try:
+        return _pauli_matrices[(dim, sparse)].copy()
+    except KeyError:
+        pass
+
+    if sparse:
+        matrices = list()
+
+        shape = (dim, dim)
+
+        data = np.full(dim, np.sqrt(2. / dim), dtype=complex)
+        indices = np.arange(dim)
+        indptr = np.arange(dim + 1)
+        matrices.append(csr_array((data, indices, indptr), shape=shape))
+
+        for ishell in range(1, dim):
+            for ipos in range(ishell):
+                indices = [ishell, ipos]
+                indptr = [0] * (ipos + 1) + [1] * (ishell - ipos)
+                indptr += [2] * (dim - ishell)
+
+                matrices.append(csr_array(([1.+0.j, 1.+0.j], indices, indptr), shape=shape))
+                matrices.append(csr_array(([-1.j, 1.j], indices, indptr), shape=shape))
+
+            data = np.array([1.] * ishell + [-ishell], dtype=complex)
+            data *= np.sqrt(2. / ishell / (ishell + 1.))
+            indices = np.arange(ishell + 1)
+            indptr = list(range(ishell + 1)) + [ishell + 1] * (dim - ishell)
+            matrices.append(csr_array((data, indices, indptr), shape=shape))
+
+        matrices = np.array(matrices)
+
+    else:
+        # Compose the unnormalized matrices
+        matrices = np.zeros((dim ** 2, dim, dim), dtype=complex)
+
+        matrices[0] = np.diag(np.ones(dim))
+        ip = 1
+        for isub in range(1, dim):
+            for irow in range(isub):
+                matrices[ip, irow, isub] = 1.
+                matrices[ip, isub, irow] = 1.
+                ip += 1
+                matrices[ip, irow, isub] = -1.j
+                matrices[ip, isub, irow] = 1.j
+                ip += 1
+
+            matrices[ip, :isub + 1, :isub + 1] = np.diag(np.array([1.] * isub + [-isub]))
+            ip += 1
+
+        # Normalization
+        norm = np.trace(np.matmul(matrices, matrices), axis1=1, axis2=2)
+        matrices *= np.sqrt(2. / norm)[:, None, None]
+
+    # Make the matrix immutable
+    matrices.setflags(write=False)
+
+    _pauli_matrices[(dim, sparse)] = matrices
+
+    return matrices
+
+_pauli_matrices = dict()
 
 
 def paulis_shape(dim: MatrixDimension) -> Tuple[int, ...]:
