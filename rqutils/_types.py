@@ -1,3 +1,5 @@
+"""Types and type hints."""
+
 from typing import Union, Sequence
 from numbers import Number
 

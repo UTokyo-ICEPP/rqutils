@@ -8,13 +8,15 @@ Generalized Pauli matrices (:mod:`rqutils.paulis`)
 Fundamentals
 ============
 
-Generalized :math:`n`-dimensional Pauli matrices :math:`\lambda^{(n)}_{k}` (:math:`0 \leq k \leq n^2 - 1`)
-are defined recursively:
+Generalized :math:`n`-dimensional Pauli matrices :math:`\lambda^{(n)}_{k}`
+(:math:`0 \leq k \leq n^2 - 1`) are defined recursively:
 
 - :math:`\lambda^{(n)}_{0} = \sqrt{\frac{2}{n}} \mathrm{diag}(1, \dots, 1, 1)`
-- :math:`\lambda^{(n)}_{k} = \mathrm{blkdiag}(\lambda^{(n-1)}_{k}, 0)` for :math:`1 \leq k < (n-1)^2`
+- :math:`\lambda^{(n)}_{k} = \mathrm{blkdiag}(\lambda^{(n-1)}_{k}, 0)` for
+  :math:`1 \leq k < (n-1)^2`
 - :math:`(\lambda^{(n)}_{(n-1)^2 + k})_{ab} = \xi_k \delta_{k//2, a}\delta_{n-1, b} + \eta_k \delta_{n-1, a}\delta_{k//2, b}`
-  for :math:`0 \leq k < 2(n-1)`, with :math:`\xi_k = \eta_k = 1` (:math:`k` even) and :math:`-\xi_k = \eta_k = i` (:math:`k` odd)
+  for :math:`0 \leq k < 2(n-1)`, with :math:`\xi_k = \eta_k = 1` (:math:`k` even) and
+  :math:`-\xi_k = \eta_k = i` (:math:`k` odd)
 - :math:`\lambda^{(n)}_{n^2-1} = \sqrt{\frac{2}{n(n-1)}} \mathrm{diag}(1, \dots, 1, -n+1)`
 
 These matrices satisfy the normalization condition
@@ -42,28 +44,29 @@ To extract the coefficient :math:`\nu_k`, one needs to compute
 
 i.e., divide the product trace by 2.
 
-Also, note that :math:`\lambda^{(n)}_{0}` is *not* the :math:`n`-dimensional identity matrix but differ
-from it by a factor :math:`\sqrt{\frac{2}{n}}`.
-
+Also, note that :math:`\lambda^{(n)}_{0}` is *not* the :math:`n`-dimensional identity matrix but
+differ from it by a factor :math:`\sqrt{\frac{2}{n}}`.
 
 Pauli products
 ==============
 
 A physical composite system of :math:`s` subsystems is usually better described in terms of a tensor
-product of :math:`s` Hamiltonians each of dimension :math:`n_i (i=1, \dots, s)`, rather than a single
-Hamiltonian of :math:`N := \prod_{i=1}^{s} n^i` dimensions. A natural decomposition of the former
-would be in terms of tensor products of :math:`s` Pauli matrices
+product of :math:`s` Hamiltonians each of dimension :math:`n_i (i=1, \dots, s)`, rather than a
+single Hamiltonian of :math:`N := \prod_{i=1}^{s} n^i` dimensions. A natural decomposition of the
+former would be in terms of tensor products of :math:`s` Pauli matrices
 
 .. math::
 
-    \Lambda^{(n_1 \dots n_s)}_{k_1 \dots k_s} = \frac{1}{2^{s-1}} \bigotimes_{i=1}^{s} \lambda^{(n_i)}_{k_i},
+    \Lambda^{(n_1 \dots n_s)}_{k_1 \dots k_s} = \frac{1}{2^{s-1}} \bigotimes_{i=1}^{s}
+                                                \lambda^{(n_i)}_{k_i},
 
 which constitute an orthonormal basis of the space of :math:`N`-dimensional Hermitian matrices with
 a rather awkward normalization
 
 .. math::
 
-    \mathrm{tr}(\Lambda^{(n_1 \dots n_s)}_{k_1 \dots k_s} \Lambda^{(n_1 \dots n_s)}_{l_1 \dots l_s}) = 2 \frac{1}{2^{s-1}} \prod_i \delta_{k_i, l_i}.
+    \mathrm{tr}(\Lambda^{(n_1 \dots n_s)}_{k_1 \dots k_s} \Lambda^{(n_1 \dots n_s)}_{l_1 \dots l_s})
+    = 2 \frac{1}{2^{s-1}} \prod_i \delta_{k_i, l_i}.
 
 The full `s`-body Hamiltonian :math:`H` is decomposed into
 
@@ -81,9 +84,9 @@ and the component :math:`\nu_{k_1 \dots k_s}` is extracted by
 Dimension truncation
 ====================
 
-Thanks to the recursive definition of the Pauli matrices, the decomposition of an :math:`m`-dimensional
-submatrix of an :math:`n`-dimensional Hermitian matrix is mostly trivially obtained from the components
-of the latter:
+Thanks to the recursive definition of the Pauli matrices, the decomposition of an
+:math:`m`-dimensional submatrix of an :math:`n`-dimensional Hermitian matrix is mostly trivially
+obtained from the components of the latter:
 
 If
 
@@ -97,20 +100,23 @@ then the truncated matrix :math:`\bar{H}^{(m)}` is
 
     \bar{H}^{(m)} = \sum_{k=0}^{m^2-1} \bar{\nu}_k \lambda^{(m)}_k,
 
-with :math:`\bar{\nu}_k = \nu_k` for :math:`1 \leq k \leq m^2 - 1`. For :math:`k=0`, however, we need to
-consider the projection of the diagonal matrices:
+with :math:`\bar{\nu}_k = \nu_k` for :math:`1 \leq k \leq m^2 - 1`. For :math:`k=0`, however, we
+need to consider the projection of the diagonal matrices:
 
 .. math::
 
     \mathrm{tr}_{m} (\lambda^{(m)}_0 \bar{\lambda}^{(n|m)}_0) & = 2 \sqrt{\frac{m}{n}}, \\
-    \mathrm{tr}_{m} (\lambda^{(m)}_0 \bar{\lambda}^{(n|m)}_{d^2-1}) & = 2 \sqrt{\frac{m}{d(d-1)}} \quad \text{if} \; d > m
+    \mathrm{tr}_{m} (\lambda^{(m)}_0 \bar{\lambda}^{(n|m)}_{d^2-1}) & = 2 \sqrt{\frac{m}{d(d-1)}}
+                                                                        \quad \text{if} \; d > m
 
-where :math:`\mathrm{tr}_{m}(\cdot)` represents the :math:`m`-dimensional trace, and :math:`\bar{\lambda}^{(n|m)}_k`
+where :math:`\mathrm{tr}_{m}(\cdot)` represents the :math:`m`-dimensional trace, and
+:math:`\bar{\lambda}^{(n|m)}_k`
 is the :math:`m`-dimensional submatrix of :math:`\lambda^{(n)}_k`. Thus we have
 
 .. math::
 
-    \bar{\nu}_0 = \frac{1}{2} \mathrm{tr}_m (\lambda^{(m)}_0 \bar{H}^{(m)}) = \sqrt{\frac{m}{n}} \nu_0 + \sum_{d > m} \sqrt{\frac{m}{d(d-1)}} \nu_{d^2-1}.
+    \bar{\nu}_0 = \frac{1}{2} \mathrm{tr}_m (\lambda^{(m)}_0 \bar{H}^{(m)})
+                = \sqrt{\frac{m}{n}} \nu_0 + \sum_{d > m} \sqrt{\frac{m}{d(d-1)}} \nu_{d^2-1}.
 
 Pauli Matrices API
 ==================
@@ -136,11 +142,11 @@ try:
     import jax
     import jax.numpy as jnp
 except ImportError:
-    has_jax = False
+    HAS_JAX = False
 else:
-    has_jax = True
+    HAS_JAX = True
 
-from ._types import ArrayType, array_like, MatrixDimension
+from ._types import ArrayType, MatrixDimension, array_like
 
 def paulis(dim: MatrixDimension, sparse: bool = False) -> Union[np.ndarray, Tuple[csr_array]]:
     r"""Return an array of generalized Pauli matrices or matrix products of given dimension(s).
@@ -180,19 +186,21 @@ def paulis(dim: MatrixDimension, sparse: bool = False) -> Union[np.ndarray, Tupl
         # be and cf are reshaped into 1 dimension each
         chars = string.ascii_letters
         if num_sub * 3 > len(chars):
-            raise NotImplementedError('Too many subsystems - need an implementation using recursive np.kron')
+            raise NotImplementedError('Too many subsystems - need an implementation using recursive'
+                                      ' np.kron')
 
         indices_in = []
         indices_out = [''] * 3
-        for il in range(0, num_sub * 3, 3):
-            indices_in.append(chars[il:il + 3])
-            indices_out[0] += chars[il]
-            indices_out[1] += chars[il + 1]
-            indices_out[2] += chars[il + 2]
+        for ichar in range(0, num_sub * 3, 3):
+            indices_in.append(chars[ichar:ichar + 3])
+            indices_out[0] += chars[ichar]
+            indices_out[1] += chars[ichar + 1]
+            indices_out[2] += chars[ichar + 2]
 
         indices = f'{",".join(indices_in)}->{"".join(indices_out)}'
         dim_array = np.asarray(dim)
-        shape = np.concatenate((np.square(dim_array), np.prod(np.repeat(dim_array[None, :], 2, axis=0), axis=1)))
+        shape = np.concatenate((np.square(dim_array),
+                                np.prod(np.repeat(dim_array[None, :], 2, axis=0), axis=1)))
 
         matrix_array = np.einsum(indices, *subsystems).reshape(*shape) / (2 ** (num_sub - 1))
 
@@ -202,7 +210,7 @@ def paulis(dim: MatrixDimension, sparse: bool = False) -> Union[np.ndarray, Tupl
 
     return matrix_array
 
-_pauli_products = dict()
+_pauli_products = {}
 
 
 def pauli_matrices(dim: int, sparse: bool = False):
@@ -218,7 +226,7 @@ def pauli_matrices(dim: int, sparse: bool = False):
         pass
 
     if sparse:
-        matrices = list()
+        matrices = []
 
         shape = (dim, dim)
 
@@ -249,18 +257,18 @@ def pauli_matrices(dim: int, sparse: bool = False):
         matrices = np.zeros((dim ** 2, dim, dim), dtype=complex)
 
         matrices[0] = np.diag(np.ones(dim))
-        ip = 1
-        for isub in range(1, dim):
-            for irow in range(isub):
-                matrices[ip, irow, isub] = 1.
-                matrices[ip, isub, irow] = 1.
-                ip += 1
-                matrices[ip, irow, isub] = -1.j
-                matrices[ip, isub, irow] = 1.j
-                ip += 1
+        imat = 1
+        for ishell in range(1, dim):
+            for ipos in range(ishell):
+                matrices[imat, ipos, ishell] = 1.
+                matrices[imat, ishell, ipos] = 1.
+                imat += 1
+                matrices[imat, ipos, ishell] = -1.j
+                matrices[imat, ishell, ipos] = 1.j
+                imat += 1
 
-            matrices[ip, :isub + 1, :isub + 1] = np.diag(np.array([1.] * isub + [-isub]))
-            ip += 1
+            matrices[imat, :ishell + 1, :ishell + 1] = np.diag(np.array([1.] * ishell + [-ishell]))
+            imat += 1
 
         # Normalization
         norm = np.trace(np.matmul(matrices, matrices), axis1=1, axis2=2)
@@ -273,7 +281,7 @@ def pauli_matrices(dim: int, sparse: bool = False):
 
     return matrices
 
-_pauli_matrices = dict()
+_pauli_matrices = {}
 
 
 def paulis_shape(dim: MatrixDimension) -> Tuple[int, ...]:
@@ -301,11 +309,12 @@ def components(
     Args:
         matrix: Matrix to decompose. The last two dimensions of the array are dotted with the Pauli
             matrices.
-        dim: Subsystem dimensions. The product of subsystem dimensions must match the matrix dimension.
-            If None, the matrix is assumed to represent a single system.
+        dim: Subsystem dimensions. The product of subsystem dimensions must match the matrix
+            dimension. If None, the matrix is assumed to represent a single system.
 
     Returns:
-        A complex array of shape `(..., d1**2, d2**2, ...)` where `d1`, `d2`, ... are the subsystem dimensions.
+        A complex array of shape `(..., d1**2, d2**2, ...)` where `d1`, `d2`, ... are the subsystem
+        dimensions.
 
     Raises:
         ValueError: If `prod(dim)` does not match the matrix dimension.
@@ -356,7 +365,7 @@ def compose(
 
 
 def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
-    r"""Return the vector that projects the components of original_dim decomposition onto lambda_0 of reduced_dim.
+    r"""Return the vector that projects the diagonal components onto lambda_0 of reduced_dim.
 
     Args:
         reduced_dim: Matrix dimension of the target subspace.
@@ -376,8 +385,8 @@ def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
     projector = np.zeros(original_dim ** 2)
     projector[0] = np.sqrt(reduced_dim / original_dim)
 
-    for d in range(reduced_dim + 1, original_dim + 1):
-        projector[d ** 2 - 1] = np.sqrt(reduced_dim / d / (d - 1))
+    for dim in range(reduced_dim + 1, original_dim + 1):
+        projector[dim ** 2 - 1] = np.sqrt(reduced_dim / dim / (dim - 1))
 
     projector.setflags(write=False)
 
@@ -386,7 +395,7 @@ def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
     return projector
 
 
-_l0_projectors = dict()
+_l0_projectors = {}
 
 
 def truncate(
@@ -396,9 +405,9 @@ def truncate(
 ) -> ArrayType:
     r"""Truncate a component array of a matrix into the components for a submatrix.
 
-    The component array can have extra dimensions in front (e.g. time axis if this is a time series of components).
-    In such a case, reduced_dim must be a sequence of integers with the length correpsonding to the number of
-    subsystems.
+    The component array can have extra dimensions in front (e.g. time axis if this is a time series
+    of components). In such a case, reduced_dim must be a sequence of integers with the length
+    correpsonding to the number of subsystems.
 
     Args:
         components: Pauli components of the original matrix, shape (..., d1**2, d2**2, ...)
@@ -418,7 +427,7 @@ def truncate(
 
     if npmod is np:
         if np.any(reduced_shape > np.asarray(original_shape)):
-            raise ValueError(f'Reduced dimensions greater than original dimensions')
+            raise ValueError('Reduced dimensions greater than original dimensions')
 
         if np.allclose(reduced_shape, original_shape):
             return components.copy()
@@ -433,14 +442,14 @@ def truncate(
         # |  0  0  1  0  0  0  0  0  0
         # |  0  0  0  1  0  0  0  0  0
 
-        od = original_dim[idim] # Dimension of the Paulis
-        os = original_shape[idim] # Number of Paulis
-        rd = reduced_dim[idim]
-        rs = reduced_shape[idim]
+        odim = original_dim[idim] # Dimension of the Paulis
+        osh = original_shape[idim] # Number of Paulis
+        rdim = reduced_dim[idim]
+        rsh = reduced_shape[idim]
 
-        projector_0 = l0_projector(rd, od)[None, :]
-        projector_1 = npmod.concatenate((npmod.eye(rs)[1:],
-                                         npmod.zeros((rs - 1, os - rs))),
+        projector_0 = l0_projector(rdim, odim)[None, :]
+        projector_1 = npmod.concatenate((npmod.eye(rsh)[1:],
+                                         npmod.zeros((rsh - 1, osh - rsh))),
                                         axis=1)
         projector = npmod.concatenate((projector_0, projector_1), axis=0)
 
@@ -449,7 +458,7 @@ def truncate(
         # After tensordot, the projected axis is at position 0
         return npmod.moveaxis(projected, 0, first_component_axis + idim)
 
-    if has_jax and npmod is jnp:
+    if HAS_JAX and npmod is jnp:
         def loop_body(idim, components):
             return jax.lax.cond(reduced_dim[idim] == original_dim[idim],
                                 lambda c: c,
@@ -491,23 +500,23 @@ def symmetry(dim: MatrixDimension):
 
     for pauli_dim in dim:
         try:
-            symmetry = _pauli_symmetry[pauli_dim]
+            sym = _pauli_symmetry[pauli_dim]
         except KeyError:
-            symmetry = np.zeros(pauli_dim ** 2, dtype=int)
-            ip = 1
+            sym = np.zeros(pauli_dim ** 2, dtype=int)
+            imat = 1
             for isub in range(1, pauli_dim):
                 for _ in range(isub):
-                    symmetry[ip] = 1
-                    ip += 1
-                    symmetry[ip] = -1
-                    ip += 1
+                    sym[imat] = 1
+                    imat += 1
+                    sym[imat] = -1
+                    imat += 1
 
-                ip += 1
+                imat += 1
 
-            symmetry.setflags(write=False)
-            _pauli_symmetry[pauli_dim] = symmetry
+            sym.setflags(write=False)
+            _pauli_symmetry[pauli_dim] = sym
 
-        subsystems.append(symmetry)
+        subsystems.append(sym)
 
     # Compose symmetry combinations
     # Truth table for two subsystems
@@ -517,20 +526,20 @@ def symmetry(dim: MatrixDimension):
     #  0| -1  0  1
     #  1| -1  1  1
 
-    symmetry = subsystems[0]
+    fullsym = subsystems[0]
     for subsystem in subsystems[1:]:
-        symprod = symmetry[..., None] * subsystem
-        symsum = symmetry[..., None] + subsystem
-        symmetry = symprod + np.where(symprod == 0, symsum, 0)
+        symprod = fullsym[..., None] * subsystem
+        symsum = fullsym[..., None] + subsystem
+        fullsym = symprod + np.where(symprod == 0, symsum, 0)
 
-    symmetry.setflags(write=False)
-    _symmetries[dim] = symmetry
+    fullsym.setflags(write=False)
+    _symmetries[dim] = fullsym
 
-    return symmetry
+    return fullsym
 
 
-_symmetries = dict()
-_pauli_symmetry = dict()
+_symmetries = {}
+_pauli_symmetry = {}
 
 
 def labels(

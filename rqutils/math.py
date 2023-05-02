@@ -16,23 +16,24 @@ Math API
    matrix_angle
 """
 
-from typing import Callable, Tuple, Any, Union
-from types import ModuleType
+import pickle
 import sys
 import tempfile
-import pickle
+from typing import Callable, Tuple, Union
+from types import ModuleType
+
 import numpy as np
 try:
     import h5py
 except ImportError:
-    has_h5py = False
+    HAS_H5PY = False
 else:
-    has_h5py = True
+    HAS_H5PY = True
 
 from ._types import ArrayType, array_like
 
 def matrix_ufunc(
-    op: Callable,
+    operator: Callable,
     mat: array_like,
     hermitian: Union[int, bool] = 0,
     with_diagonals: bool = False,
@@ -42,14 +43,14 @@ def matrix_ufunc(
     """Apply a unitary-invariant unary matrix operator to an array of normal matrices.
 
     The argument `mat` must be an array of normal (i.e. square diagonalizable) matrices in the last
-    two dimensions. This function unitary-diagonalizes the matrices, applies `op` to the diagonals,
-    and inverts the diagonalization.
+    two dimensions. This function unitary-diagonalizes the matrices, applies `operator` to the
+    diagonals, and inverts the diagonalization.
 
     **Diagonalization and gradient**
 
-    When using this function with an autodiff library (e.g. JAX), the gradient diverges when an input parameter
-    controls off-diagonal elements of ``mat`` but ``mat`` is diagonal. Use an alternative function (that is
-    hopefully available) in such cases:
+    When using this function with an autodiff library (e.g. JAX), the gradient diverges when an
+    input parameter controls off-diagonal elements of ``mat`` but ``mat`` is diagonal. Use an
+    alternative function (that is hopefully available) in such cases:
 
     .. code-block:: python
 
@@ -67,16 +68,18 @@ def matrix_ufunc(
                               mat)
 
     Args:
-        op: Unary operator to be applied to the diagonals of ``mat``.
+        operator: Unary operator to be applied to the diagonals of ``mat``.
         mat: Array of normal matrices (shape (..., n, n)). No check on normality is performed.
-        hermitian: 1 or True -> ``mat`` is Hermitian, -1 -> ``mat`` is anti-hermitian, 0 or False -> otherwise
-        with_diagonals: If True, also return the array ``op(eigenvalues)``.
+        hermitian: 1 or True -> ``mat`` is Hermitian, -1 -> ``mat`` is anti-hermitian, 0 or
+            False -> otherwise
+        with_diagonals: If True, also return the array ``operator(eigenvalues)``.
 
     Returns:
-        An array corresponding to `op(mat)`. If `diagonals==True`, another array corresponding to `op(eigvals)`.
+        An array corresponding to `operator(mat)`. If `diagonals==True`, another array corresponding
+        to `operator(eigvals)`.
     """
     try:
-        if hermitian == 1 or hermitian == True:
+        if hermitian in (1, True):
             eigvals, eigcols = npmod.linalg.eigh(mat)
         elif hermitian == -1:
             eigvals, eigcols = npmod.linalg.eigh(1.j * mat)
@@ -85,7 +88,7 @@ def matrix_ufunc(
             eigvals, eigcols = npmod.linalg.eig(mat)
     except:
         if save_errors:
-            if has_h5py:
+            if HAS_H5PY:
                 with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmpf:
                     pass
 
@@ -101,14 +104,15 @@ def matrix_ufunc(
 
     eigrows = npmod.conjugate(npmod.moveaxis(eigcols, -2, -1))
 
-    op_eigvals = op(eigvals)
+    op_eigvals = operator(eigvals)
 
     op_mat = npmod.matmul(eigcols * op_eigvals[..., None, :], eigrows)
 
     if with_diagonals:
         return op_mat, op_eigvals
-    else:
-        return op_mat
+
+    return op_mat
+
 
 def matrix_exp(
     mat: array_like,
@@ -120,6 +124,7 @@ def matrix_exp(
     """`matrix_ufunc(exp, ...)`"""
     return matrix_ufunc(npmod.exp, mat, hermitian=hermitian, with_diagonals=with_diagonals,
                         npmod=npmod, save_errors=save_errors)
+
 
 def matrix_angle(
     mat: array_like,

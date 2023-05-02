@@ -14,27 +14,24 @@ QPrint API
    qprint
 """
 
-from typing import Tuple, List, Sequence, Union, Optional, Any
-from numbers import Number
-import builtins
 from dataclasses import dataclass
 from enum import Enum
+from numbers import Number
+from typing import Tuple, List, Sequence, Union, Optional, Any
 import numpy as np
-
 try:
     import scipy
 except ImportError:
-    has_scipy = False
+    HAS_SCIPY = False
 else:
-    has_scipy = True
-
+    HAS_SCIPY = True
 try:
     import matplotlib as mpl
     import matplotlib.pyplot as plt
 except ImportError:
-    has_mpl = False
+    HAS_MPL = False
 else:
-    has_mpl = True
+    HAS_MPL = True
 
     MATPLOTLIB_INLINE_BACKENDS = {
         "module://ipykernel.pylab.backend_inline",
@@ -45,16 +42,16 @@ else:
 try:
     from qutip import Qobj
 except ImportError:
-    has_qutip = False
+    HAS_QUTIP = False
 else:
-    has_qutip = True
+    HAS_QUTIP = True
 
 from . import paulis
 from ._types import array_like, MatrixDimension
 
 
 PrintReturnType = str
-if has_mpl:
+if HAS_MPL:
     PrintReturnType = Union[PrintReturnType, mpl.figure.Figure]
 
 def qprint(
@@ -95,13 +92,16 @@ def qprint(
     Args:
         qobj: Input quantum object.
         fmt: Print format (`'braket'` or `'pauli'`).
-        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in LaTeX).
-        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in LaTeX).
+        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in
+            LaTeX).
+        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in
+            LaTeX).
         global_phase: Specification of the phase to factor out. Give a numeric offset or 'mean'.
         terms_per_row: Number of terms to show per row.
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
-        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times this value.
+        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times
+            this value.
         lhs_label: If not None, prepend 'label = ' to the printout.
         dim: Specification of the dimensions of the subsystems. For `fmt='pauli'`, used only when
             `qobj` is a square matrix or a 1D array.
@@ -158,29 +158,32 @@ def qprint(
 
     if output == 'text':
         return pobj
-    elif output == 'latex':
+    if output == 'latex':
         return pobj.latex(env)
-    elif output == 'mpl':
+    if output == 'mpl':
         return pobj.mpl()
-    else:
-        raise NotImplementedError(f'qprint with output {output} not implemented')
+
+    raise NotImplementedError(f'qprint with output {output} not implemented')
 
 
 class QPrintBase:
     """Helper class to compose an expression of a given quantum object.
 
-    This is a base class for QPrint which performs numerical processing of the components in the input
-    quantum object. Basis labeling is handled by the concrete subclasses.
+    This is a base class for QPrint which performs numerical processing of the components in the
+    input quantum object. Basis labeling is handled by the concrete subclasses.
 
     Args:
         qobj: Input quantum object.
-        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in LaTeX).
-        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in LaTeX).
+        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in
+            LaTeX).
+        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in
+            LaTeX).
         global_phase: Specification of the phase to factor out. Give a numeric offset or ``'mean'``.
         terms_per_row: Number of terms to show per row.
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
-        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times this value.
+        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times
+            this value.
         lhs_label: If not None, prepends ``'lhs_label = '`` to the printout.
         dim: Specification of the dimensions of the subsystems.
     """
@@ -246,6 +249,7 @@ class QPrintBase:
         return expr
 
     def latex(self, env='split') -> str:
+        """Return a LaTeX expression."""
         pre_expr, lines = self._make_lines('latex')
 
         if pre_expr:
@@ -271,11 +275,12 @@ class QPrintBase:
 
         if env:
             return fr'\begin{{{env}}} {expr} \end{{{env}}}'
-        else:
-            return expr
 
-    def mpl(self, ax: Optional[mpl.axes.Axes] = None):
-        if not has_mpl:
+        return expr
+
+    def mpl(self, ax: Optional[mpl.axes.Axes] = None) -> Union[mpl.figure.Figure, None]:
+        """Display or return the expression as a matplotlib figure."""
+        if not HAS_MPL:
             raise RuntimeError('Matplotlib is not available')
 
         pre_expr, lines = self._make_lines('latex')
@@ -298,13 +303,14 @@ class QPrintBase:
 
         num_rows = len(lines)
         for irow, line in enumerate(lines):
-            ax.text(0.5, 1. / num_rows * (num_rows - irow - 1), f'${line}$', fontsize='x-large', ha='right')
+            ax.text(0.5, 1. / num_rows * (num_rows - irow - 1), f'${line}$', fontsize='x-large',
+                    ha='right')
 
         if fig is not None:
             if mpl.get_backend() in MATPLOTLIB_INLINE_BACKENDS:
                 plt.close(fig)
 
-            return fig
+        return fig
 
     def _process(self) -> Tuple[int, str, str, List[List[Term]]]:
         """Compose a list of QPrintTerms."""
@@ -403,7 +409,8 @@ class QPrintBase:
         # Show only terms with absamp < max(absamp) * amp_cutoff
         amp_atol = np.amax(absamp) * self.amp_cutoff
         amp_is_zero = np.isclose(np.zeros_like(absamp), absamp, atol=amp_atol)
-        term_indices = list(zip(*np.logical_not(amp_is_zero).nonzero())) # convert into list of tuples
+        # convert into list of tuples
+        term_indices = list(zip(*np.logical_not(amp_is_zero).nonzero()))
 
         # List of terms
         terms = []
@@ -421,17 +428,15 @@ class QPrintBase:
         return global_sign, global_amp, global_phase, terms
 
     def _qobj_data(self, qobj):
-        if has_qutip and isinstance(qobj, Qobj):
+        if HAS_QUTIP and isinstance(qobj, Qobj):
             if self._dim is None:
                 self._dim = tuple(qobj.dims[0])
 
             qobj = qobj.data
             data = qobj.data
-        elif has_scipy and isinstance(qobj, scipy.sparse.csr_matrix):
-            qobj = qobj
+        elif HAS_SCIPY and isinstance(qobj, scipy.sparse.csr_matrix):
             data = qobj.data
         elif isinstance(qobj, np.ndarray):
-            qobj = qobj
             data = qobj
         else:
             raise NotImplementedError(f'qprint not implemented for {type(qobj)}')
@@ -440,6 +445,9 @@ class QPrintBase:
 
     def _add_labels(self, terms, mode):
         pass
+
+    def _format_lhs(self, mode) -> Union[str, None]:
+        return None
 
     def _make_lines(self, mode) -> list:
         global_sign, global_amp, global_phase, terms = self._process()
@@ -490,7 +498,7 @@ class QPrintBase:
     def _format_phase(self, phase_expr, mode):
         if phase_expr == '0':
             return ''
-        elif phase_expr == '/':
+        if phase_expr == '/':
             return 'i'
 
         if mode == 'text':
@@ -530,13 +538,16 @@ class QPrintBraKet(QPrintBase):
 
     Args:
         qobj: Input quantum object.
-        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in LaTeX).
-        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in LaTeX).
+        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in
+            LaTeX).
+        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in
+            LaTeX).
         global_phase: Specification of the phase to factor out. Give a numeric offset or 'mean'.
         terms_per_row: Number of terms to show per row.
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
-        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times this value.
+        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times
+            this value.
         lhs_label: If not None, prepend 'label = ' to the printout.
         binary: Show bra and ket indices in binary.
     """
@@ -587,8 +598,8 @@ class QPrintBraKet(QPrintBase):
             self._dim = (self._objdim,)
 
         if np.prod(self._dim) != self._objdim:
-            raise ValueError(f'Product of subsystem dimensions {np.prod(self._dim)} and qobj dimension'
-                             f'{self._objdim} do not match')
+            raise ValueError(f'Product of subsystem dimensions {np.prod(self._dim)} and qobj'
+                             f' dimension {self._objdim} do not match')
 
     def _add_labels(self, terms, mode):
         has_ket = self._objtype in (QPrintBraKet.QobjType.KET, QPrintBraKet.QobjType.OPER)
@@ -605,7 +616,7 @@ class QPrintBraKet(QPrintBase):
             label_template = ','.join(['{}'] * len(self._dim))
 
         # Make tuples of quantum state labels and format the term indices
-        if has_scipy and isinstance(self._qobj, scipy.sparse.csr_matrix):
+        if HAS_SCIPY and isinstance(self._qobj, scipy.sparse.csr_matrix):
             # CSR matrix: diff if indptr = number of elements in each row
             repeats = np.diff(self._qobj.indptr)
             row_labels_flat = np.repeat(np.arange(self._qobj.shape[0]), repeats)
@@ -645,13 +656,13 @@ class QPrintBraKet(QPrintBase):
             if mode == 'text':
                 if self._objtype == QPrintBraKet.QobjType.KET:
                     return f'|{self.lhs_label}>'
-                elif self._objtype == QPrintBraKet.QobjType.BRA:
+                if self._objtype == QPrintBraKet.QobjType.BRA:
                     return f'<{self.lhs_label}|'
 
             elif mode == 'latex':
                 if self._objtype == QPrintBraKet.QobjType.KET:
                     return fr'| {self.lhs_label} \rangle'
-                elif self._objtype == QPrintBraKet.QobjType.BRA:
+                if self._objtype == QPrintBraKet.QobjType.BRA:
                     return fr'\langle {self.lhs_label} |'
 
         return self.lhs_label
@@ -664,13 +675,16 @@ class QPrintPauli(QPrintBase):
         qobj: A square matrix (shape `(d1*d2*..., d1*d2*...)`), a structured components array
             (shape `(d1**2, d2**2, ...)`), or a fully flattened components array. Argument `dim` is
             required in the first and third cases.
-        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in LaTeX).
-        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in LaTeX).
+        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in
+            LaTeX).
+        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in
+            LaTeX).
         global_phase: Specification of the phase to factor out. Give a numeric offset or 'mean'.
         terms_per_row: Number of terms to show per row.
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
-        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times this value.
+        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times
+            this value.
         lhs_label: If not None, prepend 'label = ' to the printout.
         dim: Specification of the dimensions of the subsystems. Used only when `qobj` is a square
             matrix or a 1D array.
@@ -762,13 +776,16 @@ class QPrintMatrix(QPrintBase):
         qobj: A square matrix (shape `(d1*d2*..., d1*d2*...)`), a structured components array
             (shape `(d1**2, d2**2, ...)`), or a fully flattened components array. Argument `dim` is
             required in the first and third cases.
-        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in LaTeX).
-        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in LaTeX).
+        amp_norm: Specification of the normalization of amplitudes by (numeric devisor, unit in
+            LaTeX).
+        phase_norm: Specification of the normalization of phases by (numeric devisor, unit in
+            LaTeX).
         global_phase: Specification of the phase to factor out. Give a numeric offset or 'mean'.
         terms_per_row: Number of terms to show per row.
         amp_format: Format for the numerical value of the amplitude absolute values.
         phase_format: Format for the numerical value of the phases.
-        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times this value.
+        amp_cutoff: Ignore terms with absolute amplitudes less than ``max(abs(amplitudes))`` times
+            this value.
         lhs_label: If not None, prepend 'label = ' to the printout.
         dim: Specification of the dimensions of the subsystems. Used only when `qobj` is a square
             matrix or a 1D array.
@@ -836,7 +853,7 @@ class QPrintMatrix(QPrintBase):
 
             rows[irow][icolumn] = element
 
-        lines = list()
+        lines = []
 
         if mode == 'latex':
             for row in rows:
