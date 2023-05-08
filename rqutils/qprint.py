@@ -218,10 +218,12 @@ class QPrintBase:
         self.amp_cutoff = amp_cutoff
         self.lhs_label = lhs_label
 
-        if isinstance(dim, int):
-            self._dim = (dim,)
-        else:
+        if dim is None or isinstance(dim, tuple):
             self._dim = dim
+        elif isinstance(dim, (int, np.integer)):
+            self._dim = (int(dim),)
+        else:
+            self._dim = tuple(map(int, dim))
 
         self._qobj, self._data = self._qobj_data(qobj)
 

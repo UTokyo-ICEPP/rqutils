@@ -159,10 +159,10 @@ def paulis(dim: MatrixDimension, sparse: bool = False) -> Union[np.ndarray, Tupl
         An array of Pauli (product) matrices as an array. For `dim=(d1, d2, ...)`, the shape of
         the array is `(d1**2, d2**2, ..., d1*d2*..., d1*d2*...)`.
     """
-    if isinstance(dim, int):
-        dim = (dim,)
+    if isinstance(dim, (int, np.integer)):
+        dim = (int(dim),)
     elif not isinstance(dim, tuple):
-        dim = tuple(dim)
+        dim = tuple(map(int, dim))
 
     if len(dim) == 1:
         return pauli_matrices(dim[0], sparse=sparse)
@@ -293,8 +293,8 @@ def paulis_shape(dim: MatrixDimension) -> Tuple[int, ...]:
     Returns:
         Shape of the array obtained by ``paulis(dim)``.
     """
-    if isinstance(dim, int):
-        dim = (dim,)
+    if isinstance(dim, (int, np.integer)):
+        dim = (int(dim),)
 
     return tuple(np.square(dim)) + (tuple(np.prod(dim, keepdims=True)) * 2)
 
@@ -322,8 +322,8 @@ def components(
     if npmod is np:
         if dim is None:
             dim = (matrix.shape[-1],)
-        elif isinstance(dim, int):
-            dim = (dim,)
+        elif isinstance(dim, (int, np.integer)):
+            dim = (int(dim),)
 
         if np.prod(dim) != matrix.shape[-1]:
             raise ValueError(f'Invalid subsystem dimensions {dim}')
@@ -350,9 +350,9 @@ def compose(
     """
     if npmod is np:
         if dim is None:
-            dim = np.around(np.sqrt(components.shape)).astype(int)
-        elif isinstance(dim, int):
-            dim = (dim,)
+            dim = tuple(map(int, np.around(np.sqrt(components.shape))))
+        elif isinstance(dim, (int, np.integer)):
+            dim = (int(dim),)
 
         if not np.allclose(np.square(dim), components.shape[-len(dim):]):
             raise ValueError('Components array shape invalid')
@@ -416,8 +416,8 @@ def truncate(
     Returns:
         Components of the submatrix, shape (..., r1**2, r2**2, ...)
     """
-    if npmod is np and isinstance(reduced_dim, int):
-        reduced_dim = (reduced_dim,) * len(components.shape)
+    if npmod is np and isinstance(reduced_dim, (int, np.integer)):
+        reduced_dim = (int(reduced_dim),) * len(components.shape)
 
     num_subsystems = len(reduced_dim)
     first_component_axis = len(components.shape) - num_subsystems
@@ -485,11 +485,10 @@ def symmetry(dim: MatrixDimension):
         An integer array with entries -1, 0, 1 depending on whether the corresponding Pauli matrix
         is antisymmetric, diagonal, or symmetric.
     """
-    if isinstance(dim, int):
-        dim = (dim,)
-
-    if not isinstance(dim, tuple):
-        dim = tuple(dim)
+    if isinstance(dim, (int, np.integer)):
+        dim = (int(dim),)
+    elif not isinstance(dim, tuple):
+        dim = tuple(map(int, dim))
 
     try:
         return _symmetries[dim]
@@ -562,8 +561,8 @@ def labels(
     Returns:
         An ndarray of type string and shape `(d1**2, d2**2, ...)`.
     """
-    if isinstance(dim, int):
-        dim = (dim,)
+    if isinstance(dim, (int, np.integer)):
+        dim = (int(dim),)
 
     if symbol is None or isinstance(symbol, str):
         symbol = (symbol,) * len(dim)

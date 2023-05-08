@@ -14,4 +14,5 @@ else:
 
 array_like = Union[Number, Sequence[Number], ArrayType]
 
-MatrixDimension = Union[int, Sequence[int]]
+Integer = Union[int, np.integer]
+MatrixDimension = Union[Integer, Sequence[Integer]]
