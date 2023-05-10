@@ -326,7 +326,8 @@ def components(
             dim = (int(dim),)
 
         if np.prod(dim) != matrix.shape[-1]:
-            raise ValueError(f'Invalid subsystem dimensions {dim}')
+            raise ValueError(f'Invalid subsystem dimensions {dim}'
+                             f' (prod {np.prod(dim)} != matrix shape {matrix.shape[-1]})')
 
     basis = paulis(dim)
 
