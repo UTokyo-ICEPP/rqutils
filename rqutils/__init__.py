@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # MIT License
 
-# Copyright (c) 2022 ICEPP, The University of Tokyo
+# Copyright (c) 2026 ICEPP, The University of Tokyo
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -25,4 +25,4 @@
 from importlib.metadata import version
 __version__ = version(__name__)
 
-from ._types import ArrayType, array_like, MatrixDimension
+from ._types import MatrixDimension

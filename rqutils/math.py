@@ -1,7 +1,7 @@
 """
-===================================================
-Useful quantum math functions (:mod:`rqutils.math`)
-===================================================
+============================================
+Math utility functions (:mod:`rqutils.math`)
+============================================
 
 .. currentmodule:: rqutils.math
 
@@ -15,31 +15,23 @@ Math API
    matrix_exp
    matrix_angle
 """
-
-import pickle
+from collections.abc import Callable
 import sys
 import tempfile
-from typing import Callable, Tuple, Union
 from types import ModuleType
-
 import numpy as np
-try:
-    import h5py
-except ImportError:
-    HAS_H5PY = False
-else:
-    HAS_H5PY = True
+from numpy.typing import ArrayLike, NDArray
+import h5py
 
-from ._types import ArrayType, array_like
 
 def matrix_ufunc(
     operator: Callable,
-    mat: array_like,
-    hermitian: Union[int, bool] = 0,
+    mat: ArrayLike,
+    hermitian: int | bool = 0,
     with_diagonals: bool = False,
     npmod: ModuleType = np,
-    save_errors=False
-) -> Union[ArrayType, Tuple[ArrayType, ArrayType]]:
+    save_errors: bool = False
+) -> NDArray | tuple[NDArray, NDArray]:
     """Apply a unitary-invariant unary matrix operator to an array of normal matrices.
 
     The argument `mat` must be an array of normal (i.e. square diagonalizable) matrices in the last
@@ -88,26 +80,18 @@ def matrix_ufunc(
             eigvals, eigcols = npmod.linalg.eig(mat)
     except:
         if save_errors:
-            if HAS_H5PY:
-                with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmpf:
-                    pass
-
-                with h5py.File(tmpf.name, 'w') as out:
-                    out.create_dataset('matrices', data=mat)
-            else:
-                with tempfile.NamedTemporaryFile(delete=False) as tmpf:
-                    pickle.dump(mat, tmpf)
+            with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmpf:
+                pass
+            with h5py.File(tmpf.name, 'w') as out:
+                out.create_dataset('matrices', data=mat)
 
             sys.stderr.write(f'Error in eigendecomposition. Matrix saved at {tmpf.name}\n')
 
         raise
 
     eigrows = npmod.conjugate(npmod.moveaxis(eigcols, -2, -1))
-
     op_eigvals = operator(eigvals)
-
     op_mat = npmod.matmul(eigcols * op_eigvals[..., None, :], eigrows)
-
     if with_diagonals:
         return op_mat, op_eigvals
 
@@ -115,24 +99,24 @@ def matrix_ufunc(
 
 
 def matrix_exp(
-    mat: array_like,
-    hermitian: Union[int, bool] = 0,
+    mat: ArrayLike,
+    hermitian: int | bool = 0,
     with_diagonals: bool = False,
     npmod: ModuleType = np,
-    save_errors=False
-) -> ArrayType:
+    save_errors: bool = False
+) -> NDArray:
     """`matrix_ufunc(exp, ...)`"""
     return matrix_ufunc(npmod.exp, mat, hermitian=hermitian, with_diagonals=with_diagonals,
                         npmod=npmod, save_errors=save_errors)
 
 
 def matrix_angle(
-    mat: array_like,
-    hermitian: Union[int, bool] = 0,
+    mat: ArrayLike,
+    hermitian: int | bool = 0,
     with_diagonals: bool = False,
     npmod: ModuleType = np,
     save_errors=False
-) -> ArrayType:
+) -> NDArray:
     """`matrix_ufunc(angle, ...)`"""
     return matrix_ufunc(npmod.angle, mat, hermitian=hermitian, with_diagonals=with_diagonals,
                         npmod=npmod, save_errors=save_errors)

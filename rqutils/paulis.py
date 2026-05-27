@@ -132,23 +132,22 @@ Pauli Matrices API
    symmetry
    labels
 """
-
-from typing import Sequence, Optional, Union, Tuple
+from collections.abc import Sequence
+from typing import Optional
 from types import ModuleType
 import string
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 from scipy.sparse import csr_array
-try:
-    import jax
-    import jax.numpy as jnp
-except ImportError:
-    HAS_JAX = False
-else:
-    HAS_JAX = True
+import jax
+import jax.numpy as jnp
 
-from ._types import ArrayType, MatrixDimension, array_like
+from rqutils._types import MatrixDimension
 
-def paulis(dim: MatrixDimension, sparse: bool = False) -> Union[np.ndarray, Tuple[csr_array]]:
+def paulis(
+    dim: MatrixDimension,
+    sparse: bool = False
+) -> NDArray[np.complex128] | tuple[csr_array]:
     r"""Return an array of generalized Pauli matrices or matrix products of given dimension(s).
 
     Args:
@@ -167,18 +166,13 @@ def paulis(dim: MatrixDimension, sparse: bool = False) -> Union[np.ndarray, Tupl
     if len(dim) == 1:
         return pauli_matrices(dim[0], sparse=sparse)
 
-    try:
-        return _pauli_products[(dim, sparse)].copy()
-    except KeyError:
-        pass
+    if (cache := _pauli_products.get((dim, sparse))) is not None:
+        return cache.copy()
 
-    subsystems = list(pauli_matrices(d, sparse=sparse) for d in dim)
-
+    subsystems = [pauli_matrices(d, sparse=sparse) for d in dim]
     num_sub = len(subsystems)
-
     if sparse:
         raise NotImplementedError('Need an hour')
-
     else:
         # Compose Pauli products
         # (d1**2, d1, d1) x (d2**2, d2, d2) -> (d1**2, d2**2, d1*d2, d1*d2)
@@ -201,33 +195,30 @@ def paulis(dim: MatrixDimension, sparse: bool = False) -> Union[np.ndarray, Tupl
         dim_array = np.asarray(dim)
         shape = np.concatenate((np.square(dim_array),
                                 np.prod(np.repeat(dim_array[None, :], 2, axis=0), axis=1)))
-
         matrix_array = np.einsum(indices, *subsystems).reshape(*shape) / (2 ** (num_sub - 1))
 
     matrix_array.setflags(write=False)
-
-    _pauli_products[(dim, sparse)] = matrix_array
-
+    _pauli_products[(dim, sparse)] = matrix_array.copy()
     return matrix_array
 
 _pauli_products = {}
 
 
-def pauli_matrices(dim: int, sparse: bool = False):
+def pauli_matrices(dim: int, sparse: bool = False) -> NDArray[np.complex128 | np.object_]:
     """Return a set of Pauli matrices of a given dimension.
 
     Args:
         dim: Dimension of the matrices.
         sparse: Whether to return the matrices as an array (dtype=object) of CSR arrays.
+
+    Returns:
+        An array of matrices.
     """
-    try:
-        return _pauli_matrices[(dim, sparse)].copy()
-    except KeyError:
-        pass
+    if (cache := _pauli_matrices.get((dim, sparse))) is not None:
+        return cache.copy()
 
     if sparse:
         matrices = []
-
         shape = (dim, dim)
 
         data = np.full(dim, np.sqrt(2. / dim), dtype=complex)
@@ -276,15 +267,13 @@ def pauli_matrices(dim: int, sparse: bool = False):
 
     # Make the matrix immutable
     matrices.setflags(write=False)
-
     _pauli_matrices[(dim, sparse)] = matrices
-
     return matrices
 
 _pauli_matrices = {}
 
 
-def paulis_shape(dim: MatrixDimension) -> Tuple[int, ...]:
+def paulis_shape(dim: MatrixDimension) -> tuple[int, ...]:
     """Return just the shape of the paulis array for the given dimension.
 
     Args:
@@ -300,10 +289,10 @@ def paulis_shape(dim: MatrixDimension) -> Tuple[int, ...]:
 
 
 def components(
-    matrix: array_like,
+    matrix: ArrayLike,
     dim: Optional[MatrixDimension] = None,
     npmod: ModuleType = np
-) -> ArrayType:
+) -> NDArray[np.complex128]:
     r"""Return the Pauli decomposition coefficients :math:`\nu_{k_1 \dots k_n}` of the matrix.
 
     Args:
@@ -330,15 +319,14 @@ def components(
                              f' (prod {np.prod(dim)} != matrix shape {matrix.shape[-1]})')
 
     basis = paulis(dim)
-
     return npmod.tensordot(matrix, basis, ((-2, -1), (-1, -2))) * (2 ** (len(dim) - 2))
 
 
 def compose(
-    components: array_like,
+    components: ArrayLike,
     dim: Optional[MatrixDimension] = None,
     npmod: ModuleType = np
-) -> ArrayType:
+) -> NDArray[np.complex128]:
     r"""Compose a matrix from the Pauli components.
 
     Args:
@@ -359,13 +347,12 @@ def compose(
             raise ValueError('Components array shape invalid')
 
     basis = paulis(dim)
-
     comp_axes = list(range(-len(dim), 0))
     pauli_axes = list(range(len(dim)))
     return npmod.tensordot(components, basis, (comp_axes, pauli_axes))
 
 
-def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
+def l0_projector(reduced_dim: int, original_dim: int) -> NDArray[np.float64]:
     r"""Return the vector that projects the diagonal components onto lambda_0 of reduced_dim.
 
     Args:
@@ -375,10 +362,8 @@ def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
     Returns:
         Projection vector :math:`\vec{v}` that gives :math:`\bar{\nu}_0 = \vec{v} \cdot \vec{\nu}`.
     """
-    try:
-        return _l0_projectors[(reduced_dim, original_dim)]
-    except KeyError:
-        pass
+    if (cache := _l0_projectors.get((reduced_dim, original_dim))) is not None:
+        return cache.copy()
 
     if reduced_dim > original_dim:
         raise ValueError('Reduced dim greater than original dim')
@@ -390,20 +375,17 @@ def l0_projector(reduced_dim: int, original_dim: int) -> np.ndarray:
         projector[dim ** 2 - 1] = np.sqrt(reduced_dim / dim / (dim - 1))
 
     projector.setflags(write=False)
-
-    _l0_projectors[(reduced_dim, original_dim)] = projector
-
+    _l0_projectors[(reduced_dim, original_dim)] = projector.copy()
     return projector
-
 
 _l0_projectors = {}
 
 
 def truncate(
-    components: array_like,
+    components: ArrayLike,
     reduced_dim: MatrixDimension,
     npmod: ModuleType = np
-) -> ArrayType:
+) -> NDArray[np.complex128]:
     r"""Truncate a component array of a matrix into the components for a submatrix.
 
     The component array can have extra dimensions in front (e.g. time axis if this is a time series
@@ -453,13 +435,11 @@ def truncate(
                                          npmod.zeros((rsh - 1, osh - rsh))),
                                         axis=1)
         projector = npmod.concatenate((projector_0, projector_1), axis=0)
-
         projected = npmod.tensordot(projector, components, (1, first_component_axis + idim))
-
         # After tensordot, the projected axis is at position 0
         return npmod.moveaxis(projected, 0, first_component_axis + idim)
 
-    if HAS_JAX and npmod is jnp:
+    if npmod is jnp:
         def loop_body(idim, components):
             return jax.lax.cond(reduced_dim[idim] == original_dim[idim],
                                 lambda c: c,
@@ -476,7 +456,7 @@ def truncate(
     return components
 
 
-def symmetry(dim: MatrixDimension):
+def symmetry(dim: MatrixDimension) -> NDArray[np.int_]:
     r"""Return the symmetry (-1, 0, 1) of the Pauli matrices.
 
     Args:
@@ -491,17 +471,13 @@ def symmetry(dim: MatrixDimension):
     elif not isinstance(dim, tuple):
         dim = tuple(map(int, dim))
 
-    try:
-        return _symmetries[dim]
-    except KeyError:
-        pass
+    if (cache := _symmetries.get(dim)) is not None:
+        return cache.copy()
 
     subsystems = []
 
     for pauli_dim in dim:
-        try:
-            sym = _pauli_symmetry[pauli_dim]
-        except KeyError:
+        if (sym := _pauli_symmetry.get(pauli_dim)) is None:
             sym = np.zeros(pauli_dim ** 2, dtype=int)
             imat = 1
             for isub in range(1, pauli_dim):
@@ -533,10 +509,8 @@ def symmetry(dim: MatrixDimension):
         fullsym = symprod + np.where(symprod == 0, symsum, 0)
 
     fullsym.setflags(write=False)
-    _symmetries[dim] = fullsym
-
+    _symmetries[dim] = fullsym.copy()
     return fullsym
-
 
 _symmetries = {}
 _pauli_symmetry = {}
@@ -544,11 +518,11 @@ _pauli_symmetry = {}
 
 def labels(
     dim: MatrixDimension,
-    symbol: Optional[Union[str, Sequence[str], Sequence[Sequence[str]]]] = None,
+    symbol: Optional[str | Sequence[str] | Sequence[Sequence[str]]] = None,
     delimiter: str = '',
     norm: bool = True,
     fmt: str = 'latex'
-) -> np.ndarray:
+) -> NDArray[np.str_]:
     r"""Generate the labels for the Pauli matrices of a given dimension.
 
     Args:
@@ -579,16 +553,16 @@ def labels(
                 labels = ['I', 'X', 'Y', 'Z']
             elif sym is None:
                 if fmt == 'text':
-                    labels = list(f'λ{i}' for i in range(pauli_dim ** 2))
+                    labels = [f'λ{i}' for i in range(pauli_dim ** 2)]
                 else:
-                    labels = list(fr'{{\lambda_{{{i}}}}}' for i in range(pauli_dim ** 2))
+                    labels = [fr'{{\lambda_{{{i}}}}}' for i in range(pauli_dim ** 2)]
             else:
-                labels = list(str(i) for i in range(pauli_dim ** 2))
+                labels = [str(i) for i in range(pauli_dim ** 2)]
         elif isinstance(sym, str):
-            labels = list(f'{{{sym}_{{{i}}}}}' for i in range(pauli_dim ** 2))
+            labels = [f'{{{sym}_{{{i}}}}}' for i in range(pauli_dim ** 2)]
         else:
             assert len(sym) == pauli_dim ** 2, 'Invalid length of the symbols array'
-            labels = list(f'{{{s}}}' for s in sym)
+            labels = [f'{{{s}}}' for s in sym]
 
         out = np.char.add(np.repeat(out[..., None], pauli_dim ** 2, axis=-1), labels)
 

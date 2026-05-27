@@ -13,18 +13,15 @@ QPrint API
 
    qprint
 """
-
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from numbers import Number
-from typing import Tuple, List, Sequence, Union, Optional, Any
+from typing import Optional, Any
 import numpy as np
-try:
-    import scipy
-except ImportError:
-    HAS_SCIPY = False
-else:
-    HAS_SCIPY = True
+from numpy.typing import ArrayLike
+import scipy
 try:
     import matplotlib as mpl
     import matplotlib.pyplot as plt
@@ -32,42 +29,40 @@ except ImportError:
     HAS_MPL = False
 else:
     HAS_MPL = True
-
-    MATPLOTLIB_INLINE_BACKENDS = {
-        "module://ipykernel.pylab.backend_inline",
-        "module://matplotlib_inline.backend_inline",
-        "nbAgg",
-    }
-
 try:
     from qutip import Qobj
 except ImportError:
     HAS_QUTIP = False
 else:
     HAS_QUTIP = True
+import rqutils.paulis as paulis
+from rqutils._types import MatrixDimension
 
-from . import paulis
-from ._types import array_like, MatrixDimension
-
-
-PrintReturnType = str
+type PrintReturnType = str
 if HAS_MPL:
-    PrintReturnType = Union[PrintReturnType, mpl.figure.Figure]
+    MATPLOTLIB_INLINE_BACKENDS = {
+        "module://ipykernel.pylab.backend_inline",
+        "module://matplotlib_inline.backend_inline",
+        "nbAgg",
+    }
+
+    PrintReturnType |= mpl.figure.Figure
+
 
 def qprint(
     qobj: Any,
     fmt: str = 'braket',
-    amp_norm: Optional[Union[Number, Tuple[Number, str]]] = None,
-    phase_norm: Optional[Tuple[Number, str]] = (np.pi, 'π'),
-    global_phase: Optional[Union[Number, str]] = None,
+    amp_norm: Optional[Number| tuple[Number, str]] = None,
+    phase_norm: Optional[tuple[Number, str]] = (np.pi, 'π'),
+    global_phase: Optional[Number | str] = None,
     terms_per_row: int = 0,
     amp_format: str = '.3f',
     phase_format: str = '.2f',
     amp_cutoff: float = 5.e-4,
     lhs_label: Optional[str] = None,
-    dim: Optional[array_like] = None,
+    dim: Optional[ArrayLike] = None,
     binary: bool = False,
-    symbol: Optional[Union[str, Sequence[str], Sequence[Sequence[str]]]] = None,
+    symbol: Optional[str | Sequence[str] | Sequence[Sequence[str]]] = None,
     delimiter: str = '',
     output: str = 'latex'
 ) -> PrintReturnType:
@@ -166,7 +161,7 @@ def qprint(
     raise NotImplementedError(f'qprint with output {output} not implemented')
 
 
-class QPrintBase:
+class QPrintBase(ABC):
     """Helper class to compose an expression of a given quantum object.
 
     This is a base class for QPrint which performs numerical processing of the components in the
@@ -187,7 +182,6 @@ class QPrintBase:
         lhs_label: If not None, prepends ``'lhs_label = '`` to the printout.
         dim: Specification of the dimensions of the subsystems.
     """
-
     @dataclass
     class Term:
         index: tuple
@@ -199,9 +193,9 @@ class QPrintBase:
     def __init__(
         self,
         qobj: Any,
-        amp_norm: Optional[Union[Number, Tuple[Number, str]]] = None,
-        phase_norm: Optional[Tuple[Number, str]] = (np.pi, 'π'),
-        global_phase: Optional[Union[Number, str]] = None,
+        amp_norm: Optional[Number | tuple[Number, str]] = None,
+        phase_norm: Optional[tuple[Number, str]] = (np.pi, 'π'),
+        global_phase: Optional[Number | str] = None,
         terms_per_row: int = 0,
         amp_format: str = '.3f',
         phase_format: str = '.2f',
@@ -236,12 +230,10 @@ class QPrintBase:
             expr += ' = '
 
         pre_expr, lines = self._make_lines('text')
-
         if pre_expr:
             expr += f'{pre_expr} ('
 
         indentation = ' ' * len(expr)
-
         expr += f'{lines[0]}\n'
         expr += '\n'.join((indentation + l) for l in lines[1:])
 
@@ -263,7 +255,7 @@ class QPrintBase:
                 lines[-1] = r'\left. ' + lines[-1]
 
         if env == 'split' and len(lines) > 1:
-            lines = list(f'& {line}' for line in lines)
+            lines = [f'& {line}' for line in lines]
 
         if pre_expr:
             lines[0] = f'{pre_expr} {lines[0]}'
@@ -280,7 +272,7 @@ class QPrintBase:
 
         return expr
 
-    def mpl(self, ax: Optional[mpl.axes.Axes] = None) -> Union[mpl.figure.Figure, None]:
+    def mpl(self, ax: Optional[mpl.axes.Axes] = None) -> mpl.figure.Figure | None:
         """Display or return the expression as a matplotlib figure."""
         if not HAS_MPL:
             raise RuntimeError('Matplotlib is not available')
@@ -314,7 +306,7 @@ class QPrintBase:
 
         return fig
 
-    def _process(self) -> Tuple[int, str, str, List[List[Term]]]:
+    def _process(self) -> tuple[int, str, str, list[list[Term]]]:
         """Compose a list of QPrintTerms."""
         # Amplitude format template
         amp_template = f'{{:{self.amp_format}}}'
@@ -436,7 +428,7 @@ class QPrintBase:
 
             qobj = qobj.data
             data = qobj.data
-        elif HAS_SCIPY and isinstance(qobj, scipy.sparse.csr_matrix):
+        elif isinstance(qobj, scipy.sparse.csr_matrix):
             data = qobj.data
         elif isinstance(qobj, np.ndarray):
             data = qobj
@@ -445,13 +437,15 @@ class QPrintBase:
 
         return qobj, data
 
+    @abstractmethod
     def _add_labels(self, terms, mode):
         pass
 
-    def _format_lhs(self, mode) -> Union[str, None]:
+    @abstractmethod
+    def _format_lhs(self, mode):
         return None
 
-    def _make_lines(self, mode) -> list:
+    def _make_lines(self, mode):
         global_sign, global_amp, global_phase, terms = self._process()
         self._add_labels(terms, mode)
 
@@ -561,9 +555,9 @@ class QPrintBraKet(QPrintBase):
     def __init__(
         self,
         qobj: Any,
-        amp_norm: Optional[Union[Number, Tuple[Number, str]]] = None,
-        phase_norm: Optional[Tuple[Number, str]] = (np.pi, 'π'),
-        global_phase: Optional[Union[Number, str]] = None,
+        amp_norm: Optional[Number | tuple[Number, str]] = None,
+        phase_norm: Optional[tuple[Number, str]] = (np.pi, 'π'),
+        global_phase: Optional[Number | str] = None,
         terms_per_row: int = 0,
         amp_format: str = '.3f',
         phase_format: str = '.2f',
@@ -582,7 +576,8 @@ class QPrintBraKet(QPrintBase):
             phase_format=phase_format,
             amp_cutoff=amp_cutoff,
             lhs_label=lhs_label,
-            dim=dim)
+            dim=dim
+        )
 
         self.binary = binary
 
@@ -618,7 +613,7 @@ class QPrintBraKet(QPrintBase):
             label_template = ','.join(['{}'] * len(self._dim))
 
         # Make tuples of quantum state labels and format the term indices
-        if HAS_SCIPY and isinstance(self._qobj, scipy.sparse.csr_matrix):
+        if isinstance(self._qobj, scipy.sparse.csr_matrix):
             # CSR matrix: diff if indptr = number of elements in each row
             repeats = np.diff(self._qobj.indptr)
             row_labels_flat = np.repeat(np.arange(self._qobj.shape[0]), repeats)
@@ -653,7 +648,7 @@ class QPrintBraKet(QPrintBase):
                 elif mode == 'latex':
                     term.label += fr'\langle {bra_label} |'
 
-    def _format_lhs(self, mode) -> Union[str, None]:
+    def _format_lhs(self, mode):
         if self.lhs_label:
             if mode == 'text':
                 if self._objtype == QPrintBraKet.QobjType.KET:
@@ -696,16 +691,16 @@ class QPrintPauli(QPrintBase):
     def __init__(
         self,
         qobj: Any,
-        amp_norm: Optional[Union[Number, Tuple[Number, str]]] = None,
-        phase_norm: Optional[Tuple[Number, str]] = (np.pi, 'π'),
-        global_phase: Optional[Union[Number, str]] = None,
+        amp_norm: Optional[Number | tuple[Number, str]] = None,
+        phase_norm: Optional[tuple[Number, str]] = (np.pi, 'π'),
+        global_phase: Optional[Number | str] = None,
         terms_per_row: int = 0,
         amp_format: str = '.3f',
         phase_format: str = '.2f',
         amp_cutoff: float = 1.e-6,
         lhs_label: Optional[str] = None,
         dim: Optional[MatrixDimension] = None,
-        symbol: Optional[Union[str, Sequence[str], Sequence[Sequence[str]]]] = None,
+        symbol: Optional[str | Sequence[str] | Sequence[Sequence[str]]] = None,
         delimiter: str = ''
     ):
         super().__init__(
@@ -718,7 +713,8 @@ class QPrintPauli(QPrintBase):
             phase_format=phase_format,
             amp_cutoff=amp_cutoff,
             lhs_label=lhs_label,
-            dim=dim)
+            dim=dim
+        )
 
         self.symbol = symbol
         self.delimiter = delimiter
@@ -767,7 +763,7 @@ class QPrintPauli(QPrintBase):
             else:
                 term.label = str(labels[term.index])
 
-    def _format_lhs(self, mode) -> Union[str, None]:
+    def _format_lhs(self, mode):
         return self.lhs_label
 
 
@@ -797,9 +793,9 @@ class QPrintMatrix(QPrintBase):
     def __init__(
         self,
         qobj: Any,
-        amp_norm: Optional[Union[Number, Tuple[Number, str]]] = None,
-        phase_norm: Optional[Tuple[Number, str]] = (np.pi, 'π'),
-        global_phase: Optional[Union[Number, str]] = None,
+        amp_norm: Optional[Number | tuple[Number, str]] = None,
+        phase_norm: Optional[tuple[Number, str]] = (np.pi, 'π'),
+        global_phase: Optional[Number | str] = None,
         amp_format: str = '.3f',
         phase_format: str = '.2f',
         amp_cutoff: float = 1.e-6,
@@ -813,7 +809,8 @@ class QPrintMatrix(QPrintBase):
             amp_format=amp_format,
             phase_format=phase_format,
             amp_cutoff=amp_cutoff,
-            lhs_label=lhs_label)
+            lhs_label=lhs_label
+        )
 
     def _qobj_data(self, qobj):
         # Convert all qobj to a square matrix
@@ -825,7 +822,7 @@ class QPrintMatrix(QPrintBase):
 
         return qobj, data
 
-    def _make_lines(self, mode) -> list:
+    def _make_lines(self, mode):
         global_sign, global_amp, global_phase, terms = self._process()
 
         matrix_dim = self._data.shape[0]
@@ -838,7 +835,7 @@ class QPrintMatrix(QPrintBase):
         pre_expr += global_amp
         pre_expr += self._format_phase(global_phase, mode)
 
-        rows = list((['0'] * matrix_dim) for _ in range(matrix_dim))
+        rows = [(['0'] * matrix_dim) for _ in range(matrix_dim)]
 
         for term in terms:
             irow, icolumn = term.index
@@ -876,5 +873,5 @@ class QPrintMatrix(QPrintBase):
 
         return pre_expr, lines
 
-    def _format_lhs(self, mode) -> Union[str, None]:
+    def _format_lhs(self, mode):
         return self.lhs_label
