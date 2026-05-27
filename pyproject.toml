@@ -1,3 +1,33 @@
 [build-system]
-requires = ["setuptools>=42"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rqutils"
+version = "0.2.0"
+authors = [
+  { name="Yutaro Iiyama", email="iiyama@icepp.s.u-tokyo.ac.jp" },
+]
+description = "Random quantum utilities"
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "h5py",
+    "jax[cuda12]"
+]
+
+[project.optional-dependencies]
+mpl = ["matplotlib"]
+qutip = ["qutip"]
+
+[project.urls]
+Homepage = "https://github.com/UTokyo-ICEPP/rqutils"
+Issues = "https://github.com/UTokyo-ICEPP/rqutils/issues"
+Documentation = "https://rqutils.readthedocs.io/en/latest/index.html"
