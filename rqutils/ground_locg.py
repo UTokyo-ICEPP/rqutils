@@ -117,8 +117,7 @@ from typing import Optional
 from numpy.typing import DTypeLike, NDArray
 import jax
 import jax.numpy as jnp
-import jax.lax.linalg as lax_linalg
-from jax.sharding import NamedSharding, PartitionSpec, get_abstract_mesh
+from jax.sharding import PartitionSpec, get_abstract_mesh
 
 
 def ground_locg(
@@ -253,7 +252,7 @@ def _ground_locg_callable(
         # melems = _mm(vectors.conjugate().T, matvec(vectors, *args), out_sharding=sharding)
         # eigvals, eigvecs = jnp.linalg.eigh(SAS)
         # or
-        # eigvecs, eigvals = lax_linalg.eigh(melems, symmetrize_input=False)
+        # eigvecs, eigvals = jax.lax.linalg.eigh(melems, symmetrize_input=False)
         # return eigvals[0], eigvecs[:, 0]
 
     def body_iter1(xcurr, rcurr):
