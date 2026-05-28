@@ -1,7 +1,7 @@
 r"""
-=====================
-Single-vector LOBPCG.
-=====================
+==================================================
+Single-vector LOBPCG. (:mod:`rqutils.ground_locg`)
+==================================================
 
 .. currentmodule:: rqutils.ground_locg
 
@@ -26,9 +26,9 @@ problem and finds the minimum eigenvalue :math:`\lambda_0` and the corresponding
 
 The basic arguments to the function are
 
-* Matrix :math:`A`, either as a JAX Array or a function that takes the vector :math:`x` (as a JAX
+- Matrix :math:`A`, either as a JAX Array or a function that takes the vector :math:`x` (as a JAX
   Array) as input and returns :math:`Ax`.
-* Initial vector, which must have a non-vanishing overlap with :math:`v_0`.
+- Initial vector, which must have a non-vanishing overlap with :math:`v_0`.
 
 Algorithm
 =========
@@ -153,23 +153,20 @@ def ground_locg(
     return _ground_locg_matrix(mat, xinit, maxiter, tol, log_level=log_level)
 
 
-@jax.jit(static_argnames=['maxiter', 'debug', 'stack', 'analytic', 'log_level'])
+@jax.jit(static_argnames=['maxiter', 'debug', 'log_level'])
 def _ground_locg_matrix(
     mat: jax.Array,
     xinit: jax.Array,
     maxiter: int,
     tol: jax.Array | float | None,
     debug: bool = False,
-    stack: bool = False,
-    analytic: bool = True,
     log_level: int = logging.WARNING
 ):
     vspace = None
     if jnp.issubdtype(xinit.dtype, jnp.integer):
         vspace = (mat.shape[1], mat.dtype)
     return _ground_locg_callable(lambda x, a: _mm(a, x), xinit, (mat,), maxiter, tol,
-                                 vspace=vspace, debug=debug, stack=stack, analytic=analytic,
-                                 log_level=log_level)
+                                 vspace=vspace, debug=debug, log_level=log_level)
 
 
 @jax.jit(
@@ -178,8 +175,6 @@ def _ground_locg_matrix(
         'maxiter',
         'vspace',
         'debug',
-        'stack',
-        'analytic',
         'log_level'
     ]
 )
@@ -191,8 +186,6 @@ def _ground_locg_callable(
     tol: jax.Array | float | None,
     vspace: tuple[int, DTypeLike] | None = None,
     debug: bool = False,
-    stack: bool = False,
-    analytic: bool = True,
     log_level: int = logging.WARNING
 ):
     if jnp.issubdtype(xinit.dtype, jnp.integer):
@@ -230,10 +223,43 @@ def _ground_locg_callable(
             'converged': converged
         }
 
+    def rayleigh_ritz(*vectors):
+        if get_abstract_mesh().empty:
+            sharding = None
+        else:
+            sharding = PartitionSpec(None)
+
+        nv = len(vectors)
+        melems = jnp.zeros((nv, nv), dtype=vectors[0].dtype)
+        mvs = []
+        for iv1, v1 in enumerate(vectors):
+            mv1 = matvec(v1, *args)
+            mvs.append(mv1)
+            for iv2 in range(iv1 + 1, nv):
+                melems = melems.at[iv2, iv1].set(
+                    jnp.dot(vectors[iv2].conjugate(), mv1, out_sharding=sharding)
+                )
+        melems += melems.conjugate().T
+        for iv1, (v1, mv1) in enumerate(zip(vectors, mvs)):
+            melems = melems.at[iv1, iv1].set(
+                jnp.dot(v1.conjugate(), mv1, out_sharding=sharding)
+            )
+
+        if nv == 2:
+            return eigenpair_2x2(melems)
+        return eigenpair_3x3(melems)
+        # A more streamlined (but memory-consuming) implementation:
+        # vectors = jnp.stack(vectors, axis=1)
+        # melems = _mm(vectors.conjugate().T, matvec(vectors, *args), out_sharding=sharding)
+        # eigvals, eigvecs = jnp.linalg.eigh(SAS)
+        # or
+        # eigvecs, eigvals = lax_linalg.eigh(melems, symmetrize_input=False)
+        # return eigvals[0], eigvecs[:, 0]
+
     def body_iter1(xcurr, rcurr):
         norm_rcurr = jnp.linalg.norm(rcurr)
         tmp_p = rcurr / jnp.where(norm_rcurr == 0., 1., norm_rcurr)
-        theta, kappa = _rayleigh_ritz_orth(matvec, (xcurr, tmp_p), args, stack, analytic)
+        theta, kappa = rayleigh_ritz(xcurr, tmp_p)
         tmp_t = tmp_p * kappa[0] - xcurr * kappa[1]
         tmp_u = xcurr * kappa[0] + tmp_p * kappa[1]
         xnext = tmp_u / jnp.linalg.norm(tmp_u)
@@ -252,9 +278,9 @@ def _ground_locg_callable(
         # Residual basis selection.
         # R is supposed to be already orthogonal to X, but we find that it's necessary to project
         # out with respect to both X and P to get good convergence of the residual.
-        tmp_p = _project_out((xcurr, ycurr), rcurr, stack)
+        tmp_p = _project_out((xcurr, ycurr), rcurr)
         # Projected eigensolve.
-        theta, kappa = _rayleigh_ritz_orth(matvec, (xcurr, ycurr, tmp_p), args, stack, analytic)
+        theta, kappa = rayleigh_ritz(xcurr, ycurr, tmp_p)
         # New vectors
         tmp_s = ycurr * kappa[1] + tmp_p * kappa[2]
         norm_s = jnp.linalg.norm(tmp_s)
@@ -344,23 +370,18 @@ def _mm(a, b, precision=jax.lax.Precision.HIGHEST, out_sharding=None):
     return jax.lax.dot(a, b, precision=(precision, precision), out_sharding=out_sharding)
 
 
-def _project_out(basis, vector, stack):
-    if (sh := jax.typeof(vector).sharding).num_devices == 0:
-        sh_rep = None
+def _project_out(basis, vector):
+    if get_abstract_mesh().empty:
+        sharding = None
     else:
-        sh_rep = NamedSharding(sh.mesh, PartitionSpec(None))
+        sharding = PartitionSpec(None)
 
-    if stack:
-        basis = jnp.stack(basis, axis=1)
     for _ in range(2):
-        if stack:
-            vector -= _mm(basis, _mm(basis.conjugate().T, vector, out_sharding=sh_rep))
-        else:
-            ips = []
-            for vb in basis:
-                ips.append(jnp.dot(vb.conjugate(), vector, out_sharding=sh_rep))
-            for vb, ip in zip(basis, ips):
-                vector -= vb * ip
+        ips = []
+        for vb in basis:
+            ips.append(jnp.dot(vb.conjugate(), vector, out_sharding=sharding))
+        for vb, ip in zip(basis, ips):
+            vector -= vb * ip
         norm = jnp.linalg.norm(vector)
         vector /= jnp.where(norm == 0., 1., norm)
 
@@ -380,73 +401,22 @@ def _project_out(basis, vector, stack):
     # that [basis, U] is zero-or-orthogonal is ensured.
     # ================
     for _ in range(2):
-        if stack:
-            vector -= _mm(basis, _mm(basis.conjugate().T, vector, out_sharding=sh_rep))
-        else:
-            ips = []
-            for vb in basis:
-                ips.append(jnp.dot(vb.conjugate(), vector, out_sharding=sh_rep))
-            for vb, ip in zip(basis, ips):
-                vector -= vb * ip
+        ips = []
+        for vb in basis:
+            ips.append(jnp.dot(vb.conjugate(), vector, out_sharding=sharding))
+        for vb, ip in zip(basis, ips):
+            vector -= vb * ip
+
+    # A more streamlined (but memory-consuming) implementation
+    # basis = jnp.stack(basis, axis=1)
+    # for _ in range(2):
+    #     vector -= _mm(basis, _mm(basis.conjugate().T, vector, out_sharding=sharding))
+    #     norm = jnp.linalg.norm(vector)
+    #     vector /= jnp.where(norm == 0., 1., norm)
+    # for _ in range(2):
+    #     vector -= _mm(basis, _mm(basis.conjugate().T, vector, out_sharding=sharding))
 
     return vector * (jnp.linalg.norm(vector) >= 0.99).astype(vector.dtype)
-
-
-def _rayleigh_ritz_orth(matvec, vectors, args, stack, analytic):
-    """Solve the Rayleigh-Ritz problem for `A` projected to `S`.
-
-    Solves the local eigenproblem for `A` within the subspace `S`, which is
-    assumed to be orthonormal (with zero columns allowed), identifying `w, V`
-    satisfying
-
-    (1) `S.T A S V ~= diag(w) V`
-    (2) `V` is standard orthonormal
-
-    Note that (2) is simplified to be standard orthonormal because `S` is.
-
-    Args:
-      A: An operator representing the action of an `n`-sized square matrix.
-      S: An orthonormal subspace of R^n represented by an `(n, k)` array, with
-         zero columns allowed.
-
-    Returns:
-      Eigenvectors `V` and eigenvalues `w` satisfying the size-`k` system
-      described in this method doc. Note `V` will be full rank, even if `S` isn't.
-    """
-    if (sh := jax.typeof(vectors[0]).sharding).num_devices == 0:
-        sh_rep = None
-    else:
-        sh_rep = NamedSharding(sh.mesh, PartitionSpec(None))
-
-    if stack:
-        vectors = jnp.stack(vectors, axis=1)
-        melems = _mm(vectors.conjugate().T, matvec(vectors, *args), out_sharding=sh_rep)
-    else:
-        nv = len(vectors)
-        melems = jnp.zeros((nv, nv), dtype=vectors[0].dtype)
-        mvs = []
-        for iv1, v1 in enumerate(vectors):
-            mv1 = matvec(v1, *args)
-            mvs.append(mv1)
-            for iv2 in range(iv1 + 1, nv):
-                melems = melems.at[iv2, iv1].set(
-                    jnp.dot(vectors[iv2].conjugate(), mv1, out_sharding=sh_rep)
-                )
-        melems += melems.conjugate().T
-        for iv1, (v1, mv1) in enumerate(zip(vectors, mvs)):
-            melems = melems.at[iv1, iv1].set(
-                jnp.dot(v1.conjugate(), mv1, out_sharding=sh_rep)
-            )
-
-    if analytic:
-        if melems.shape[0] == 2:
-            return eigenpair_2x2(melems)
-        return eigenpair_3x3(melems)
-
-    # If we could tell to eigh to stop after first k, we would.
-    # eigvals, eigvecs = jnp.linalg.eigh(SAS)
-    eigvecs, eigvals = lax_linalg.eigh(melems, symmetrize_input=False)
-    return eigvals[0], eigvecs[:, 0]
 
 
 @jax.jit
