@@ -122,8 +122,13 @@ memory. This is because :math:`S` will not be used after caching both the source
 bits / coefficient sums. Since :math:`S` occupies :math:`\lceil n/8 \rceil N` bytes of memory,
 caching setting should be adjusted according to the values of :math:`n` and :math:`\{K^{(j)}\}_j`.
 
-Distributed arrays
-==================
+Distributed arrays and scaling limits
+=====================================
+
+When the SQD function is called within a context where the global mesh is set via
+``jax.set_mesh(mesh)``, the list of states :math:`S` is sharded along axis 0, and as a result all
+arrays with an axis with size :math:`N` follow the same sharding. Even the most aggressive caching
+described above will be possible by utilizing sufficiently many devices.
 
 SQD API
 =======
