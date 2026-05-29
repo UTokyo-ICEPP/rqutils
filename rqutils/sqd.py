@@ -30,7 +30,9 @@ thus providing the matvec function that covers the second point.
 Algorithm
 =========
 
-A term :math:`\alpha Q` in the Hamiltonian, where :math:`Q` is a Pauli string, can be expressed as
+The algorithm takes advantage of the symplectic representation of Pauli strings. A term in the
+Hamiltonian is a product of a real coefficient :math:`\alpha` and a Pauli string :math:`Q`. In the
+symplectic representation,
 
 .. math::
 
@@ -96,8 +98,9 @@ reusing them in the repeated call to the matrix-vector function. There is howeve
 the compute time and memory footprint, as is always the case with caching.
 
 Concretely, caching the source indices :math:`[j^{i}]` requires :math:`4 J N` bytes of memory,
-assuming :math:`N < 2^{32}` and therefore 32-bit (4-byte) integers are used for vector indexing.
-Caching the sign bits will require :math:`\kappa N` bytes, where
+assuming :math:`N \leq 2^{31}` (which is actually the hard limit set by other constraints; see the
+next section) and therefore 32-bit (4-byte) integers are used for vector indexing. Caching the sign
+bits will require :math:`\kappa N` bytes, where
 
 .. math::
 
@@ -126,9 +129,19 @@ Distributed arrays and scaling limits
 =====================================
 
 When the SQD function is called within a context where the global mesh is set via
-``jax.set_mesh(mesh)``, the list of states :math:`S` is sharded along axis 0, and as a result all
-arrays with an axis with size :math:`N` follow the same sharding. Even the most aggressive caching
-described above will be possible by utilizing sufficiently many devices.
+``jax.set_mesh(mesh)``, the state vector is distributed (sharded) among the devices in the mesh,
+and accordingly all arrays with an axis with size :math:`N` follow the same sharding. Even the most
+aggressive caching strategy described above will be possible this way.
+
+However, there is a limit to scaling in :math:`N` (SQD subspace dimension) imposed by the need to
+sort the states list during the initial uniquification, and also whenever the source indices for an
+X signature is computed. At the moment, sorting must take place within a single device, with at most
+:math:`2^32` elements involved. Furthermore, source indices identification sorts through a stack of
+two state lists. Therefore, the maximum achievable :math:`N` is :math:`2^31`. A comparable limit
+is set by the GPU memory, which is at most O(100)GB per device as of mid-2026.
+
+When the source indices are cached but neither the sign bits nor the diagonals are, the state list
+:math:`S` will also be sharded after the computation of the source indices are done.
 
 SQD API
 =======
@@ -172,22 +185,38 @@ def sqd(
     return_eigvec: bool = True,
     cache_level: tuple[int, int] = (1, 0)
 ) -> float | tuple[float, Vector, StateList]:
-    """Perform a sample-based quantum diagonalization of the Hamiltonian.
+    r"""Perform a sample-based quantum diagonalization of the Hamiltonian.
+
+    The Hamiltonian can be given in three different forms:
+    - A tuple of two lists, where the first list enumerates the Pauli strings :math:`Q` as strs and
+      the second contains the coefficients :math:`\alpha`.
+    - Qiskit SparsePauliOp
+    - PauliSumXZ (From ``rqutils.paulis.symplectic``)
+
+    States must have binary values and can be passed as an array of integers or booleans.
+
+    Internally, the states are bit-packed and represented by :math:`\lceil (n+1)/8 \rceil`
+    ``uint8``s, where the extra bit is placed at position 0 and serves as the indicator for spurious
+    (fill-in) entries. Accordingly, the PauliSumXZ representation of the Hamiltonian must be made
+    with ``add_padding=True``.
+
+    Cache level is a 2-tuple where the first element specifies the caching of the source indices
+    (0=no caching, 1=cached) and the second specifies the caching of the diagonal elements (0=no
+    caching, 1=cache sign bits, 2=cache diagonals)
 
     Args:
         hamiltonian: Hamiltonian to be projected and diagonalized.
         states: Binary array of computational basis states to project the Hamiltonian onto. Shape
-            [subspace_dim, num_qubits].
+            (subspace_dim, num_qubits).
         states_size: Fix the size of the states array used in computation to the specified value so
             that compilation is not triggered at each call with slightly different array sizes.
         return_eigvec: Whether to return the eigenvector (coefficients and unique state bitstrings).
-        cache_level: Switches for caching the results of get_xsources and get_diagonals. Caches
-            require 4*N*S and 16*N*S bytes of memory, respectively, where N is the number of
-            distinct X signatures in the Hamiltonian Paulis and S is the number of unique states.
+        cache_level: Switches for caching the results of source indices and sign bits / diagonals.
+            See the module documentation for the detailed discussion of the resource tradeoff involved.
 
     Returns:
-        Calculated ground state energy, ground state vector, and sorted uniquified states (if
-        return_states=True).
+        Calculated ground state energy, or a tuple of energy, ground state vector, and sorted
+        uniquified states (if return_eigvec=True).
     """
     if states_size is None:
         states_size = states.shape[0]
@@ -196,11 +225,15 @@ def sqd(
     if not isinstance(hamiltonian, PauliSumXZ):
         hamiltonian = PauliSumXZ.from_paulisum(hamiltonian, force_real=True, add_padding=True)
 
+    if not (mesh := get_abstract_mesh()).empty and (resid := states_size % mesh.size) != 0:
+        LOG.debug('Adjusting states_size to make the array divisible by %d', mesh.size)
+        states_size += mesh.size - resid
+
     # Need an extra left zero bit to distinguish fill-in states from the inputs after
     # unique(..., size=X, fill_value=255)
     # We need to insert the bit with pad() at this point because packbits() fills from the left
     # Perhaps write a new ufunc if this becomes too slow for very large input?
-    states_p = np.packbits(np.pad(states, {1: (1, 0)}), axis=1)
+    states_p = np.packbits(np.pad(states.astype(np.uint8), {1: (1, 0)}), axis=1)
 
     LOG.debug('Starting SQD with array size %s', states_size)
     start = time.time()
@@ -219,7 +252,25 @@ def hproj(
     states: StateList,
     unique_states: bool = False
 ) -> csr_array:
-    """Return the Hamiltonian projected onto given state subspace."""
+    """Return the Hamiltonian projected onto the given subspace.
+
+    The Hamiltonian can be given in three different forms:
+    - A tuple of two lists, where the first list enumerates the Pauli strings :math:`Q` as strs and
+      the second contains the coefficients :math:`\alpha`.
+    - Qiskit SparsePauliOp
+    - PauliSumXZ (From ``rqutils.paulis.symplectic``)
+
+    States must have binary values and can be passed as an array of integers or booleans.
+
+    Args:
+        hamiltonian: Hamiltonian to be projected and diagonalized.
+        states: Binary array of computational basis states to project the Hamiltonian onto. Shape
+            (subspace_dim, num_qubits).
+        unique_states: Whether the states can be assumed to be already uniquified and sorted.
+
+    Returns:
+        The projected Hamiltonian as a sparse matrix.
+    """
     if not isinstance(hamiltonian, PauliSumXZ):
         hamiltonian = PauliSumXZ.from_paulisum(hamiltonian)
     if not unique_states:
@@ -234,7 +285,7 @@ def hproj(
             return None, (columns, diagonals)
 
         return jax.lax.scan(get_from_one, None, _hamiltonian)[1]
-    
+
     columns, elements = cols_elems(hamiltonian, states_p)
     valid = columns != -1
     rows = np.tile(np.arange(states.shape[0])[None, :], (columns.shape[0], 1))[valid]
@@ -251,7 +302,8 @@ def run_sqd(
     return_eigvec: bool,
     cache_level: tuple[int, int] = (1, 0),
     log_level: int = logging.INFO
-) -> tuple[float] | tuple[float, NDArray, NDArray, int]:
+) -> tuple[float] | tuple[float, jax.Array, jax.Array, int]:
+    """JIT-compiled part of the SQD function."""
     sharding = None
     if not (mesh := get_abstract_mesh()).empty:
         sharding = PartitionSpec(mesh.axis_names)
@@ -433,6 +485,7 @@ def compute_diagonal(
     diag_signs: NDArray[np.uint8],
     coeffs: NDArray[np.inexact]
 ) -> jax.Array:
+    """Compute the diagonals from the sign bits and coefficients."""
     def cond_fn(val):
         iterm = val[1]
         return jnp.logical_and(iterm < coeffs.shape[0], jnp.not_equal(coeffs[iterm], 0.))
@@ -457,7 +510,7 @@ def get_diagonal(
     coeffs: NDArray[np.inexact],
     states: StateList
 ) -> jax.Array:
-    """Return the fully composed coefficients for one X signature."""
+    """Return the fully composed diagonals for one X signature."""
     # Null terms are removed with hamiltonian.simplify() so we iterate until we hit coeff=0
     def cond_fn(val):
         iterm = val[1]
@@ -481,6 +534,7 @@ def apply_xgrp(
     diagonal: NDArray[np.inexact],
     vec: NDArray[np.inexact]
 ) -> jax.Array:
+    """Gather vector entries from the source indices and multiply them with diagonals."""
     xvec = vec.at[..., xsource].get(mode='fill', fill_value=0., wrap_negative_indices=False,
                                     out_sharding=jax.typeof(vec).sharding)
     return xvec * diagonal
@@ -581,9 +635,3 @@ def apply_h_xz_cached(
         jnp.zeros_like(vec),
         (xsources, diagonals)
     )[0]
-
-
-@jax.jit
-def _get_cols_elems(ham_arrays, states):
-    """Compose the projected sparse Hamiltonian."""
-    
