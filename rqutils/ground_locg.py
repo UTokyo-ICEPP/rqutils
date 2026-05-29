@@ -110,6 +110,16 @@ References
 ==========
 
 [1]: https://en.wikipedia.org/wiki/LOBPCG
+
+Single-vector LOBPCG API
+========================
+
+.. autosummary::
+   :toctree: ../generated
+
+   ground_locg
+   eigenpair_2x2
+   eigenpair_3x3
 """
 from collections.abc import Callable
 import logging

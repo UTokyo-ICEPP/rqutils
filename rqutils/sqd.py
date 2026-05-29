@@ -1,7 +1,7 @@
 r"""
-============================================================================================
-Sample-based quantum diagonalization of general Pauli-sum Hamiltonians. (:mod:`rqutils.sqd`)
-============================================================================================
+===========================================================================================
+Sample-based quantum diagonalization of general Pauli-sum Hamiltonians (:mod:`rqutils.sqd`)
+===========================================================================================
 
 .. currentmodule:: rqutils.sqd
 
@@ -125,6 +125,14 @@ caching setting should be adjusted according to the values of :math:`n` and :mat
 Distributed arrays
 ==================
 
+SQD API
+=======
+
+.. autosummary::
+   :toctree: ../generated
+
+   sqd
+   hproj
 """
 from collections.abc import Sequence
 import logging
@@ -137,25 +145,18 @@ from scipy.sparse import csr_array, coo_array
 import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec, get_abstract_mesh
-try:
-    from qiskit.quantum_info import SparsePauliOp
-    HAS_QISKIT = True
-except ImportError:
-    HAS_QISKIT = False
+from rqutils.paulis.symplectic import PauliSumXZ
 from rqutils.ground_locg import ground_locg
 
 LOG = logging.getLogger(__name__)
 
-type VectorDType = np.dtype[np.float64 | np.complex128]
-type HamiltonianTuple = tuple[
-    np.ndarray[tuple[int, int], np.dtype[np.uint8]],
-    np.ndarray[tuple[int, int, int], np.dtype[np.uint8]],
-    np.ndarray[tuple[int, int], VectorDType]
-]
-type HamiltonianInput = tuple[Sequence[str], Sequence[Number]] | HamiltonianTuple
-if HAS_QISKIT:
+type HamiltonianInput = PauliSumXZ | tuple[Sequence[str], Sequence[Number]]
+try:
+    from qiskit.quantum_info import SparsePauliOp
     HamiltonianInput |= SparsePauliOp
-type Vector = np.ndarray[tuple[int], VectorDType]
+except ImportError:
+    pass
+type Vector = np.ndarray[tuple[int], np.dtype[np.inexact]]
 type StateList = np.ndarray[tuple[int, int], np.dtype[np.uint8]]
 
 
@@ -187,11 +188,8 @@ def sqd(
         states_size = states.shape[0]
     if states_size < states.shape[0]:
         raise ValueError('states_size smaller than the states array length')
-
-    if isinstance(hamiltonian, tuple) and isinstance(hamiltonian[0][0], str):
-        hamiltonian = parse_pauli_coeff_lists(hamiltonian, add_padding=True)
-    elif HAS_QISKIT and isinstance(hamiltonian, SparsePauliOp):
-        hamiltonian = parse_sparse_pauli_op(hamiltonian, add_padding=True)
+    if not isinstance(hamiltonian, PauliSumXZ):
+        hamiltonian = PauliSumXZ.from_paulisum(hamiltonian, force_real=True, add_padding=True)
 
     # Need an extra left zero bit to distinguish fill-in states from the inputs after
     # unique(..., size=X, fill_value=255)
@@ -217,15 +215,22 @@ def hproj(
     unique_states: bool = False
 ) -> csr_array:
     """Return the Hamiltonian projected onto given state subspace."""
-    if isinstance(hamiltonian, tuple) and isinstance(hamiltonian[0][0], str):
-        hamiltonian = parse_pauli_coeff_lists(hamiltonian)
-    elif HAS_QISKIT and isinstance(hamiltonian, SparsePauliOp):
-        hamiltonian = parse_sparse_pauli_op(hamiltonian)
-
+    if not isinstance(hamiltonian, PauliSumXZ):
+        hamiltonian = PauliSumXZ.from_paulisum(hamiltonian)
     if not unique_states:
         states = np.unique(states, axis=0)
     states_p = np.packbits(states, axis=1)
-    columns, elements = _get_cols_elems(hamiltonian, states_p)
+
+    @jax.jit
+    def cols_elems(_hamiltonian, _states_p):
+        def get_from_one(_, ham):
+            columns = get_xsource(ham.x, _states_p)
+            diagonals = get_diagonal(ham.z, ham.c, _states_p)
+            return None, (columns, diagonals)
+
+        return jax.lax.scan(get_from_one, None, _hamiltonian)[1]
+    
+    columns, elements = cols_elems(hamiltonian, states_p)
     valid = columns != -1
     rows = np.tile(np.arange(states.shape[0])[None, :], (columns.shape[0], 1))[valid]
     data = np.array(elements[valid])
@@ -235,14 +240,13 @@ def hproj(
 
 @jax.jit(static_argnames=['states_size', 'return_eigvec', 'cache_level', 'log_level'])
 def run_sqd(
-    ham_arrays: HamiltonianTuple,
+    hamiltonian: PauliSumXZ,
     states_p: StateList,
     states_size: int,
     return_eigvec: bool,
     cache_level: tuple[int, int] = (1, 0),
     log_level: int = logging.INFO
 ) -> tuple[float] | tuple[float, NDArray, NDArray, int]:
-    xsignatures, zsignatures, coeffs = ham_arrays
     sharding = None
     if not (mesh := get_abstract_mesh()).empty:
         sharding = PartitionSpec(mesh.axis_names)
@@ -259,7 +263,7 @@ def run_sqd(
         xsources = jax.lax.scan(
             lambda _, x: (None, get_xsource(x, states_u)),
             None,
-            xsignatures
+            hamiltonian.x
         )[1]
         if sharding:
             # We will not be performing sorts on states any more - shard the array
@@ -275,7 +279,7 @@ def run_sqd(
         diag_signs = jax.lax.scan(
             lambda _, z: (None, get_diag_signs(z, states_u)),
             None,
-            zsignatures
+            hamiltonian.z
         )[1]
     elif cache_level[1] == 2:
         if log_level <= logging.DEBUG:
@@ -284,25 +288,25 @@ def run_sqd(
         diagonals = jax.lax.scan(
             lambda _, v: (None, get_diagonal(v[0], v[1], states_u)),
             None,
-            (zsignatures, coeffs)
+            (hamiltonian.z, hamiltonian.c)
         )[1]
 
     match cache_level:
         case (0, 0):
             matvec = apply_h
-            args = (xsignatures, zsignatures, coeffs, states_u)
+            args = (hamiltonian.x, hamiltonian.z, hamiltonian.c, states_u)
         case (0, 1):
             matvec = apply_h_s_cached
-            args = (xsignatures, states_u, diag_signs, coeffs)
+            args = (hamiltonian.x, states_u, diag_signs, hamiltonian.c)
         case (0, 2):
             matvec = apply_h_z_cached
-            args = (xsignatures, states_u, diagonals)
+            args = (hamiltonian.x, states_u, diagonals)
         case (1, 0):
             matvec = apply_h_x_cached
-            args = (xsources, zsignatures, coeffs, states_u)
+            args = (xsources, hamiltonian.z, hamiltonian.c, states_u)
         case (1, 1):
             matvec = apply_h_xs_cached
-            args = (xsources, diag_signs, coeffs)
+            args = (xsources, diag_signs, hamiltonian.c)
         case (1, 2):
             matvec = apply_h_xz_cached
             args = (xsources, diagonals)
@@ -311,25 +315,25 @@ def run_sqd(
         if cache_level[1] == 2:
             diagonal = diagonals[0]
         else:
-            diagonal = get_diagonal(zsignatures[0], coeffs[0], states_u).real
+            diagonal = get_diagonal(hamiltonian.z[0], hamiltonian.c[0], states_u).real
         # Set the fill-in components to the maximum value so that argmin only sees the valid entries
         diagonal = jnp.where(states_u[:, 0] == 255, jnp.max(diagonal), diagonal)
         imin = jnp.argmin(diagonal)
         return (
             jax.lax.broadcasted_iota(imin.dtype, (states_size,), 0, out_sharding=sharding) == imin
-        ).astype(coeffs.dtype)
+        ).astype(hamiltonian.c.dtype)
 
     def vinit_nodiag():
         # TODO: Come up with a way to find a good vinit when there is no diagonal term
         return (
             jax.lax.broadcasted_iota(np.int32, (states_size,), 0, out_sharding=sharding) == 0
-        ).astype(coeffs.dtype)
+        ).astype(hamiltonian.c.dtype)
 
     if log_level <= logging.DEBUG:
         jax.debug.print('Generating vinit')
 
     vinit = jax.lax.cond(
-        jnp.all(xsignatures[0] == 0),
+        jnp.all(hamiltonian.x[0] == 0),
         vinit_from_min_diag,
         vinit_nodiag
     )
@@ -347,9 +351,9 @@ def run_sqd(
 
 @jax.jit
 def get_xsource(
-    xsignature: np.ndarray[tuple[int], np.dtype[np.uint8]],
+    xsignature: NDArray[np.uint8],
     states: StateList
-) -> jax.Array:  # [tuple[int], dtype[np.int32]]
+) -> jax.Array:
     """Return an index array into the source of an X operation.
 
     Let `V` be a vector of complex or float values with shape `[N]`, `S` be a lex-sorted 2-d array
@@ -397,9 +401,9 @@ def get_xsource(
 
 @jax.jit
 def get_diag_signs(
-    zsignatures: np.ndarray[tuple[int, int], np.dtype[np.uint8]],
+    zsignatures: NDArray[np.uint8],
     states: StateList
-) -> jax.Array:  # [tuple[int, int], np.dtype[np.uint8]]
+) -> jax.Array:
     """Return the packed sign bits."""
     def get_signs(carry, zsignature):
         out, ibyte, ibit = carry
@@ -421,9 +425,9 @@ def get_diag_signs(
 
 @jax.jit
 def compute_diagonal(
-    diag_signs: np.ndarray[tuple[int, int], np.dtype[np.uint8]],
-    coeffs: np.ndarray[tuple[int], VectorDType]
-) -> jax.Array:  # [tuple[int], VectorDType]
+    diag_signs: NDArray[np.uint8],
+    coeffs: NDArray[np.inexact]
+) -> jax.Array:
     def cond_fn(val):
         iterm = val[1]
         return jnp.logical_and(iterm < coeffs.shape[0], jnp.not_equal(coeffs[iterm], 0.))
@@ -444,10 +448,10 @@ def compute_diagonal(
 
 @jax.jit
 def get_diagonal(
-    zsignatures: np.ndarray[tuple[int, int], np.dtype[np.uint8]],
-    coeffs: np.ndarray[tuple[int], VectorDType],
+    zsignatures: NDArray[np.uint8],
+    coeffs: NDArray[np.inexact],
     states: StateList
-) -> jax.Array:  # [tuple[int], VectorDType]
+) -> jax.Array:
     """Return the fully composed coefficients for one X signature."""
     # Null terms are removed with hamiltonian.simplify() so we iterate until we hit coeff=0
     def cond_fn(val):
@@ -468,10 +472,10 @@ def get_diagonal(
 
 @jax.jit
 def apply_xgrp(
-    xsource: np.ndarray[tuple[int], np.dtype[np.int32]],
-    diagonal: np.ndarray[tuple[int], VectorDType],
-    vec: np.ndarray[tuple[int], VectorDType]
-) -> jax.Array:  # [tuple[int], VectorDType]
+    xsource: NDArray[np.int32],
+    diagonal: NDArray[np.inexact],
+    vec: NDArray[np.inexact]
+) -> jax.Array:
     xvec = vec.at[..., xsource].get(mode='fill', fill_value=0., wrap_negative_indices=False,
                                     out_sharding=jax.typeof(vec).sharding)
     return xvec * diagonal
@@ -479,12 +483,12 @@ def apply_xgrp(
 
 @jax.jit
 def apply_h(
-    vec: np.ndarray[tuple[int], VectorDType],
-    xsignatures: np.ndarray[tuple[int, int], np.dtype[np.uint8]],
-    zsignatures: np.ndarray[tuple[int, int, int], np.dtype[np.uint8]],
-    coeffs: np.ndarray[tuple[int, int], VectorDType],
+    vec: NDArray[np.inexact],
+    xsignatures: NDArray[np.uint8],
+    zsignatures: NDArray[np.uint8],
+    coeffs: NDArray[np.inexact],
     states: StateList
-) -> jax.Array:  # [tuple[int], VectorDType]
+) -> jax.Array:
     """Return Hv using X and Z signatures and Pauli coefficients."""
     def fn(out, val):
         xpat, zpats, cs = val
@@ -497,12 +501,12 @@ def apply_h(
 
 @jax.jit
 def apply_h_s_cached(
-    vec: np.ndarray[tuple[int], VectorDType],
-    xsignatures: np.ndarray[tuple[int, int], np.dtype[np.uint8]],
+    vec: NDArray[np.inexact],
+    xsignatures: NDArray[np.uint8],
     states: StateList,
-    diag_signs: np.ndarray[tuple[int, int, int], np.dtype[np.uint8]],
-    coeffs: np.ndarray[tuple[int, int], VectorDType]
-) -> jax.Array:  # [tuple[int], VectorDType]
+    diag_signs: NDArray[np.uint8],
+    coeffs: NDArray[np.inexact]
+) -> jax.Array:
     def fn(out, val):
         xpat, signs, cs = val
         xsource = get_xsource(xpat, states)
@@ -514,11 +518,11 @@ def apply_h_s_cached(
 
 @jax.jit
 def apply_h_z_cached(
-    vec: np.ndarray[tuple[int], VectorDType],
-    xsignatures: np.ndarray[tuple[int, int], np.dtype[np.uint8]],
+    vec: NDArray[np.inexact],
+    xsignatures: NDArray[np.uint8],
     states: StateList,
-    diagonals: np.ndarray[tuple[int, int], VectorDType]
-) -> jax.Array:  # [tuple[int], VectorDType]
+    diagonals: NDArray[np.inexact]
+) -> jax.Array:
     """Return Hv using precomputed xsources and diagonals data."""
     def fn(out, val):
         xsource = get_xsource(val[0], states)
@@ -529,12 +533,12 @@ def apply_h_z_cached(
 
 @jax.jit
 def apply_h_x_cached(
-    vec: np.ndarray[tuple[int], VectorDType],
-    xsources: np.ndarray[tuple[int, int], np.dtype[np.int32]],
-    zsignatures: np.ndarray[tuple[int, int, int], np.dtype[np.uint8]],
-    coeffs: np.ndarray[tuple[int, int], VectorDType],
+    vec: NDArray[np.inexact],
+    xsources: NDArray[np.int32],
+    zsignatures: NDArray[np.uint8],
+    coeffs: NDArray[np.inexact],
     states: StateList
-) -> jax.Array:  # [tuple[int], VectorDType]
+) -> jax.Array:
     """Return Hv using precomputed xsources and diagonals data."""
     def fn(out, val):
         xsource, zpats, cs = val
@@ -546,11 +550,11 @@ def apply_h_x_cached(
 
 @jax.jit
 def apply_h_xs_cached(
-    vec: np.ndarray[tuple[int], VectorDType],
-    xsources: np.ndarray[tuple[int, int], np.dtype[np.int32]],
-    diag_signs: np.ndarray[tuple[int, int, int], np.dtype[np.uint8]],
-    coeffs: np.ndarray[tuple[int, int], VectorDType]
-) -> jax.Array:  # [tuple[int], VectorDType]
+    vec: NDArray[np.inexact],
+    xsources: NDArray[np.int32],
+    diag_signs: NDArray[np.uint8],
+    coeffs: NDArray[np.inexact]
+) -> jax.Array:
     """Return Hv using precomputed xsources and diagonals data."""
     def fn(out, val):
         xsource, dsigns, cs = val
@@ -562,10 +566,10 @@ def apply_h_xs_cached(
 
 @jax.jit
 def apply_h_xz_cached(
-    vec: np.ndarray[tuple[int], VectorDType],
-    xsources: np.ndarray[tuple[int, int], np.dtype[np.int32]],
-    diagonals: np.ndarray[tuple[int, int], VectorDType]
-) -> jax.Array:  # [tuple[int], VectorDType]
+    vec: NDArray[np.inexact],
+    xsources: NDArray[np.int32],
+    diagonals: NDArray[np.inexact]
+) -> jax.Array:
     """Return Hv using precomputed xsources and diagonals data."""
     return jax.lax.scan(
         lambda out, val: (out + apply_xgrp(val[0], val[1], vec), None),
@@ -577,93 +581,4 @@ def apply_h_xz_cached(
 @jax.jit
 def _get_cols_elems(ham_arrays, states):
     """Compose the projected sparse Hamiltonian."""
-    def get_from_one(_, val):
-        columns = get_xsource(val[0], states)
-        diagonals = get_diagonal(val, states)
-        return None, (columns, diagonals)
-
-    return jax.lax.scan(get_from_one, None, ham_arrays)[1]
-
-
-def parse_pauli_coeff_lists(
-    hamiltonian: tuple[Sequence[str], Sequence[Number]],
-    add_padding: bool = False
-) -> HamiltonianTuple:
-    """Convert lists of Pauli strings and coefficients into signatures and coefficients."""
-    paulis, coeffs = hamiltonian
-    if len(paulis) != len(coeffs):
-        raise ValueError('Lengths of Pauli and coeff lists do not match')
-    if len(set(len(p) for p in paulis)) != 1:
-        raise ValueError('Pauli strings have non-uniform lengths')
-
-    coeffs = np.array(coeffs)
-    if not np.allclose(coeffs.imag, 0.):
-        raise ValueError('Coefficients of Paulis must be real for the Hamiltonian to be Hermitian.')
-    coeffs = coeffs.real
-
-    # Sort and consolidate the pauli strings and coefficients
-    paulis = np.array([list(p.upper()) for p in paulis])
-    nonzero = np.nonzero(coeffs)
-    coeffs = coeffs[nonzero]
-    paulis = paulis[nonzero]
-    paulis, indices = np.unique(paulis, axis=0, return_inverse=True)
-    masks = (indices[None, :] == np.arange(paulis.shape[0])[:, None]).astype(int)
-    coeffs = masks @ coeffs
-    xbits = (paulis == 'X' | paulis == 'Y')
-    zbits = (paulis == 'Y' | paulis == 'Z')
-
-    return _parse_xzbits_coeffs(xbits, zbits, coeffs, add_padding)
-
-
-if HAS_QISKIT:
-    def parse_sparse_pauli_op(
-        hamiltonian: SparsePauliOp,
-        add_padding: bool = False
-    ) -> HamiltonianTuple:
-        """Convert a SparsePauliOp into signatures and coefficients."""
-        if not np.allclose(hamiltonian.coeffs.imag, 0.):
-            raise ValueError('Coefficients of Paulis must be real for the Hamiltonian to be'
-                             ' Hermitian.')
-
-        # Remove null terms
-        hamiltonian = hamiltonian.simplify()
-        paulis = hamiltonian.paulis
-
-        return _parse_xzbits_coeffs(paulis.x[:, ::-1], paulis.z[:, ::-1], hamiltonian.coeffs.real,
-                                    add_padding)
-
-
-def _parse_xzbits_coeffs(
-    xbits: NDArray[np.bool_],
-    zbits: NDArray[np.bool_],
-    coeffs: NDArray[np.float64],
-    add_padding: bool
-) -> HamiltonianTuple:
-    # Find unique X signatures together with correspondence pointers
-    xuniq, indices, counts = np.unique(xbits, axis=0, return_inverse=True, return_counts=True)
-    xsignatures = xuniq.astype(np.uint8)
-    # Group the Z signatures and coeffs by X signatures
-    shape = (xsignatures.shape[0], np.max(counts))
-    zsignatures = np.zeros(shape + zbits.shape[-1:], dtype=np.uint8)
-    phcoeffs = np.zeros(shape, dtype=np.complex128)
-    for isig, xsig in enumerate(xsignatures):
-        ipaulis = np.nonzero(indices == isig)[0]
-        zsigs = zbits[ipaulis].astype(np.uint8)
-        zsignatures[isig, :counts[isig]] = zsigs
-        # Multiply the coeffs by (-i)^{n_zx}
-        iphases = np.sum(xsig & zsigs, axis=1) & 3
-        phases = np.array([1., -1.j, -1., 1.j])[iphases]
-        phcoeffs[isig, :counts[isig]] = coeffs[ipaulis] * phases
-
-    if np.all(phcoeffs.imag == 0.):
-        phcoeffs = phcoeffs.real
-
-    if add_padding:
-        # Add a dummy identity Pauli at the padding bit to align with the padding on the states
-        xsignatures = np.pad(xsignatures, {1: (1, 0)})
-        zsignatures = np.pad(zsignatures, {2: (1, 0)})
-
-    # Pack the bit signatures
-    xsignatures = np.packbits(xsignatures, axis=-1)
-    zsignatures = np.packbits(zsignatures, axis=-1)
-    return xsignatures, zsignatures, phcoeffs
+    

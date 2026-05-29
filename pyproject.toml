@@ -26,6 +26,7 @@ dependencies = [
 [project.optional-dependencies]
 mpl = ["matplotlib"]
 qutip = ["qutip"]
+qiskit = ["qiskit"]
 
 [project.urls]
 Homepage = "https://github.com/UTokyo-ICEPP/rqutils"
