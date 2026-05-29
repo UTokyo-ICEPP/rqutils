@@ -1,4 +1,4 @@
-"""
+r"""
 ========================================================================================
 GPU-efficient symplectic representation of Pauli sums (:mod:`rqutils.paulis.symplectic`)
 ========================================================================================
@@ -27,7 +27,7 @@ Symplectic Pauli sum representation API
    PauliSumXZ
    to_xzrep
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 import warnings
 import numpy as np
@@ -49,9 +49,11 @@ class PauliSumXZ:
     x: np.ndarray[tuple[int, int], np.dtype[np.uint8]]
     z: np.ndarray[tuple[int, int, int], np.dtype[np.uint8]]
     c: np.ndarray[tuple[int, int], np.dtype[np.inexact]]
+    num_qubits: int = field(metadata={'static': True})
 
     @classmethod
     def from_paulisum(
+        cls,
         paulisum: Any,
         force_real: bool = False,
         add_padding: bool = False
@@ -72,19 +74,21 @@ class PauliSumXZ:
             paulis, indices = np.unique(paulis, axis=0, return_inverse=True)
             masks = (indices[None, :] == np.arange(paulis.shape[0])[:, None]).astype(int)
             coeffs = masks @ coeffs
-            xbits = (paulis == 'X' | paulis == 'Y')
-            zbits = (paulis == 'Y' | paulis == 'Z')
+            xbits = np.logical_or(paulis == 'X', paulis == 'Y')
+            zbits = np.logical_or(paulis == 'Y', paulis == 'Z')
+            num_qubits = paulis.shape[1]
 
         elif HAS_QISKIT and isinstance(paulisum, SparsePauliOp):
-            if not np.allclose(hamiltonian.coeffs.imag, 0.):
+            if not np.allclose(paulisum.coeffs.imag, 0.):
                 raise ValueError('Coefficients of Paulis must be real for the Hamiltonian to be'
                                 ' Hermitian.')
 
             # Remove null terms
-            hamiltonian = hamiltonian.simplify()
-            coeffs = hamiltonian.coeffs
-            xbits = hamiltonian.paulis.x[:, ::-1]
-            zbits = hamiltonian.paulis.z[:, ::-1]
+            paulisum = paulisum.simplify()
+            coeffs = paulisum.coeffs
+            xbits = paulisum.paulis.x[:, ::-1]
+            zbits = paulisum.paulis.z[:, ::-1]
+            num_qubits = paulisum.num_qubits
 
         else:
             raise ValueError('Unsupported input type')
@@ -121,20 +125,26 @@ class PauliSumXZ:
         # Pack the bit signatures
         xsignatures = np.packbits(xsignatures, axis=-1)
         zsignatures = np.packbits(zsignatures, axis=-1)
-        return PauliSumXZ(xsignatures, zsignatures, phcoeffs)
+        return cls(xsignatures, zsignatures, phcoeffs, num_qubits)
+
+    @property
+    def arrays(self) -> tuple[jax.Array, jax.Array, jax.Array]:
+        return self.x, self.z, self.c
 
     def matmul(self, rhs: NDArray):
-        if rhs.shape[0] > 2 ** 31:
-            raise ValueError('Vector size exceeds 2^32')
+        if rhs.shape[0] != 2 ** self.num_qubits:
+            raise ValueError(f'RHS axis 0 size {rhs.shape[0]} is incompatible with'
+                             f' num_qubits={self.num_qubits}')
 
         indices = jnp.arange(rhs.shape[0], dtype=np.int32)
-        packed_x = jnp.sum(self.x * (256 ** self.arange(self.x.shape[1])[::-1]), axis=1,
-                           dtype=np.int32)
-        packed_z = jnp.sum(self.z * (256 ** self.arange(self.z.shape[2])[::-1]), axis=2,
-                           dtype=np.int32)
+        powers = 256 ** jnp.arange(self.x.shape[1])[::-1]
+        offset = 8 * self.x.shape[1] - self.num_qubits
+        packed_x = jnp.sum(self.x * powers, axis=1, dtype=np.int32) >> offset
+        packed_z = jnp.sum(self.z * powers, axis=2, dtype=np.int32) >> offset
         signed = jnp.bitwise_count(indices[None, None, :] & packed_z[..., None]) & 1
         signs = 1. - 2. * signed
         diagonals = jnp.sum(self.c[..., None] * signs, axis=1)
+        diagonals = jnp.expand_dims(diagonals, tuple(np.arange(1, rhs.ndim) + 1))
 
         def apply_xgrp(carry, xd):
             vec, out = carry

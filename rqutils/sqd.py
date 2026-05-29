@@ -280,11 +280,11 @@ def hproj(
     @jax.jit
     def cols_elems(_hamiltonian, _states_p):
         def get_from_one(_, ham):
-            columns = get_xsource(ham.x, _states_p)
-            diagonals = get_diagonal(ham.z, ham.c, _states_p)
+            columns = get_xsource(ham[0], _states_p)
+            diagonals = get_diagonal(ham[1], ham[2], _states_p)
             return None, (columns, diagonals)
 
-        return jax.lax.scan(get_from_one, None, _hamiltonian)[1]
+        return jax.lax.scan(get_from_one, None, _hamiltonian.arrays)[1]
 
     columns, elements = cols_elems(hamiltonian, states_p)
     valid = columns != -1
