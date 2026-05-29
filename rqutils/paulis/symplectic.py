@@ -5,6 +5,19 @@ GPU-efficient symplectic representation of Pauli sums (:mod:`rqutils.paulis.symp
 
 .. currentmodule: rqutils.paulis.symplectic
 
+Symplectic representation of a Pauli string
+===========================================
+
+Any Pauli string :math:`Q` can be expressed as
+
+.. math::
+
+    Q = (-i)^{xz} \left(Z^{z_{n-1}} \otimes \cdots Z^{z_{0}}\right)
+                                  \left(X^{x_{n-1}} \otimes \cdots X^{x_{0}}\right)
+
+where :math:`x` (X signature) and :math:`z` (Z signature) are binary vectors of length :math:`n`
+(number of qubits) and :math:`xz` represents their inner product.
+
 Symplectic Pauli sum representation API
 =======================================
 
@@ -18,6 +31,9 @@ from dataclasses import dataclass
 from typing import Any
 import warnings
 import numpy as np
+from numpy.typing import NDArray
+import jax
+import jax.numpy as jnp
 from jax.tree_util import register_dataclass
 try:
     from qiskit.quantum_info import SparsePauliOp
@@ -72,12 +88,12 @@ class PauliSumXZ:
 
         else:
             raise ValueError('Unsupported input type')
-        
+
         if force_real:
             if np.any(coeffs.imag != 0.):
                 warnings.warn('Found nonzero imaginary part when force_real=True')
             coeffs = coeffs.real
-        
+
         # Find unique X signatures together with correspondence pointers
         xuniq, indices, counts = np.unique(xbits, axis=0, return_inverse=True, return_counts=True)
         xsignatures = xuniq.astype(np.uint8)
@@ -106,3 +122,24 @@ class PauliSumXZ:
         xsignatures = np.packbits(xsignatures, axis=-1)
         zsignatures = np.packbits(zsignatures, axis=-1)
         return PauliSumXZ(xsignatures, zsignatures, phcoeffs)
+
+    def matmul(self, rhs: NDArray):
+        if rhs.shape[0] > 2 ** 31:
+            raise ValueError('Vector size exceeds 2^32')
+
+        indices = jnp.arange(rhs.shape[0], dtype=np.int32)
+        packed_x = jnp.sum(self.x * (256 ** self.arange(self.x.shape[1])[::-1]), axis=1,
+                           dtype=np.int32)
+        packed_z = jnp.sum(self.z * (256 ** self.arange(self.z.shape[2])[::-1]), axis=2,
+                           dtype=np.int32)
+        signed = jnp.bitwise_count(indices[None, None, :] & packed_z[..., None]) & 1
+        signs = 1. - 2. * signed
+        diagonals = jnp.sum(self.c[..., None] * signs, axis=1)
+
+        def apply_xgrp(carry, xd):
+            vec, out = carry
+            xsig, diags = xd
+            out += vec.at[indices ^ xsig].get(out_sharding=jax.typeof(vec).sharding) * diags
+            return (vec, out), None
+
+        return jax.lax.scan(apply_xgrp, (rhs, jnp.zeros_like(rhs)), (packed_x, diagonals))[0][1]
