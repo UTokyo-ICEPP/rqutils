@@ -35,7 +35,7 @@ except ImportError:
     HAS_QUTIP = False
 else:
     HAS_QUTIP = True
-import rqutils.paulis as paulis
+import rqutils.paulis.general as pmatrix
 from rqutils._types import MatrixDimension
 
 type PrintReturnType = str
@@ -732,7 +732,7 @@ class QPrintPauli(QPrintBase):
                 except AttributeError:
                     matrix = qobj
 
-                qobj = paulis.components(matrix, dim=self._dim)
+                qobj = pmatrix.components(matrix, dim=self._dim)
                 data = qobj
 
             elif len(qobj.shape) == 1:
@@ -753,7 +753,7 @@ class QPrintPauli(QPrintBase):
         return qobj, data
 
     def _add_labels(self, terms, mode):
-        labels = paulis.labels(self._dim, symbol=self.symbol, delimiter=self.delimiter,
+        labels = pmatrix.labels(self._dim, symbol=self.symbol, delimiter=self.delimiter,
                                fmt=mode)
 
         # Update the term objects with the basis labels

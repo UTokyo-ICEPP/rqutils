@@ -1,9 +1,9 @@
 r"""
-==================================================
-Generalized Pauli matrices (:mod:`rqutils.paulis`)
-==================================================
+==========================================================
+Generalized Pauli matrices (:mod:`rqutils.paulis.general`)
+==========================================================
 
-.. currentmodule:: rqutils.paulis
+.. currentmodule:: rqutils.paulis.general
 
 Fundamentals
 ============
@@ -141,8 +141,8 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.sparse import csr_array
 import jax
 import jax.numpy as jnp
-
 from rqutils._types import MatrixDimension
+
 
 def paulis(
     dim: MatrixDimension,
