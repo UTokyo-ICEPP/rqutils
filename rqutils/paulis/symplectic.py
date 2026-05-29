@@ -35,6 +35,7 @@ from numpy.typing import NDArray
 import jax
 import jax.numpy as jnp
 from jax.tree_util import register_dataclass
+from jax.sharding import PartitionSpec, get_abstract_mesh
 try:
     from qiskit.quantum_info import SparsePauliOp
     HAS_QISKIT = True
@@ -146,10 +147,41 @@ class PauliSumXZ:
         diagonals = jnp.sum(self.c[..., None] * signs, axis=1)
         diagonals = jnp.expand_dims(diagonals, tuple(np.arange(1, rhs.ndim) + 1))
 
-        def apply_xgrp(carry, xd):
-            vec, out = carry
+        def apply_xgrp(out, xd):
             xsig, diags = xd
-            out += vec.at[indices ^ xsig].get(out_sharding=jax.typeof(vec).sharding) * diags
-            return (vec, out), None
+            out += rhs.at[indices ^ xsig].get(out_sharding=jax.typeof(rhs).sharding) * diags
+            return out, None
 
-        return jax.lax.scan(apply_xgrp, (rhs, jnp.zeros_like(rhs)), (packed_x, diagonals))[0][1]
+        return jax.lax.scan(apply_xgrp, jnp.zeros_like(rhs), (packed_x, diagonals))[0][1]
+
+
+@register_dataclass
+@dataclass
+class Circuit:
+    """Symplectic (XZ) representation of a rotation gate."""
+    x: np.ndarray[tuple[int, int], np.dtype[np.uint8]]
+    z: np.ndarray[tuple[int, int], np.dtype[np.uint8]]
+    angle: np.ndarray[tuple[int], np.dtype[np.floating]]
+    num_qubits: int = field(metadata={'static': True})
+
+    def execute(self):
+        indices = jnp.arange(2 ** self.num_indices, dtype=np.int32)
+        powers = 256 ** jnp.arange(self.x.shape[0])[::-1]
+        offset = 8 * self.x.shape[0] - self.num_qubits
+        packed_x = jnp.sum(self.x * powers, axis=1, dtype=np.int32) >> offset
+        packed_z = jnp.sum(self.z * powers, axis=1, dtype=np.int32) >> offset
+        signed = jnp.bitwise_count(indices[None, :] & packed_z[:, None]) & 1
+        signs = 1. - 2. * signed
+        sharding = None
+        if not (mesh := get_abstract_mesh()).empty:
+            sharding = PartitionSpec(mesh.axis_names)
+
+        def apply_gate(state, gate):
+            xsig, sigs, angle = gate
+            out = state.at[indices ^ xsig].get(out_sharding=sharding)
+            out *= 1.j * sigs * jnp.sin(angle)
+            out += state * jnp.cos(angle)
+            return out, None
+
+        return jax.lax.scan(apply_gate, (indices == 0).astype(np.complex128),
+                            (packed_x, signs, self.angle))[0]
