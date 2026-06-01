@@ -137,51 +137,18 @@ class PauliSumXZ:
             raise ValueError(f'RHS axis 0 size {rhs.shape[0]} is incompatible with'
                              f' num_qubits={self.num_qubits}')
 
-        indices = jnp.arange(rhs.shape[0], dtype=np.int32)
+        indices = jnp.arange(rhs.shape[0], dtype=np.int32, out_sharding=jax.typeof(rhs).sharding)
         powers = 256 ** jnp.arange(self.x.shape[1])[::-1]
         offset = 8 * self.x.shape[1] - self.num_qubits
         packed_x = jnp.sum(self.x * powers, axis=1, dtype=np.int32) >> offset
         packed_z = jnp.sum(self.z * powers, axis=2, dtype=np.int32) >> offset
-        signed = jnp.bitwise_count(indices[None, None, :] & packed_z[..., None]) & 1
-        signs = 1. - 2. * signed
-        diagonals = jnp.sum(self.c[..., None] * signs, axis=1)
-        diagonals = jnp.expand_dims(diagonals, tuple(np.arange(1, rhs.ndim) + 1))
 
-        def apply_xgrp(out, xd):
-            xsig, diags = xd
+        def apply_xgrp(out, data):
+            xsig, zsigs, coeffs = data
+            signs = 1. - 2. * (jnp.bitwise_count(indices & zsigs[:, None]) & 1)
+            diags = jnp.sum(coeffs[..., None] * signs, axis=0)
+            diags = jnp.expand_dims(diags, tuple(np.arange(1, rhs.ndim) + 1))
             out += rhs.at[indices ^ xsig].get(out_sharding=jax.typeof(rhs).sharding) * diags
             return out, None
 
-        return jax.lax.scan(apply_xgrp, jnp.zeros_like(rhs), (packed_x, diagonals))[0][1]
-
-
-@register_dataclass
-@dataclass
-class Circuit:
-    """Symplectic (XZ) representation of a rotation gate."""
-    x: np.ndarray[tuple[int, int], np.dtype[np.uint8]]
-    z: np.ndarray[tuple[int, int], np.dtype[np.uint8]]
-    angle: np.ndarray[tuple[int], np.dtype[np.floating]]
-    num_qubits: int = field(metadata={'static': True})
-
-    def execute(self):
-        indices = jnp.arange(2 ** self.num_indices, dtype=np.int32)
-        powers = 256 ** jnp.arange(self.x.shape[0])[::-1]
-        offset = 8 * self.x.shape[0] - self.num_qubits
-        packed_x = jnp.sum(self.x * powers, axis=1, dtype=np.int32) >> offset
-        packed_z = jnp.sum(self.z * powers, axis=1, dtype=np.int32) >> offset
-        signed = jnp.bitwise_count(indices[None, :] & packed_z[:, None]) & 1
-        signs = 1. - 2. * signed
-        sharding = None
-        if not (mesh := get_abstract_mesh()).empty:
-            sharding = PartitionSpec(mesh.axis_names)
-
-        def apply_gate(state, gate):
-            xsig, sigs, angle = gate
-            out = state.at[indices ^ xsig].get(out_sharding=sharding)
-            out *= 1.j * sigs * jnp.sin(angle)
-            out += state * jnp.cos(angle)
-            return out, None
-
-        return jax.lax.scan(apply_gate, (indices == 0).astype(np.complex128),
-                            (packed_x, signs, self.angle))[0]
+        return jax.lax.scan(apply_xgrp, jnp.zeros_like(rhs), (packed_x, packed_z, self.c))[0]
