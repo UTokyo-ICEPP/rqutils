@@ -134,7 +134,7 @@ def ground_locg(
     mat: Callable[[jax.Array], jax.Array] | jax.Array,
     xinit: jax.Array | int,
     args: tuple = (),
-    maxiter: int = 100,
+    maxiter: int = 1000,
     tol: Optional[float] = None,
     vspace: tuple[int, DTypeLike] | None = None,
     log_level: int = logging.WARNING
@@ -208,8 +208,7 @@ def _ground_locg_callable(
         tol = float(jnp.finfo(xinit.dtype).eps)
 
     def diagnostics(xcurr, ycurr, rcurr, theta, kappa=None, reltol=None, converged=None):
-        vectors = jnp.stack((xcurr, ycurr, rcurr), axis=1)
-        sas = _mm(vectors.conjugate().T, matvec(vectors, *args))
+        sas = compute_sas(xcurr, ycurr, rcurr)
         axcurr = matvec(xcurr, *args)
         rho = jnp.dot(xcurr.conjugate(), axcurr, out_sharding=jax.typeof(theta).sharding).real
 
@@ -232,31 +231,36 @@ def _ground_locg_callable(
             'converged': converged
         }
 
-    def rayleigh_ritz(*vectors):
+    def compute_sas(*vectors):
         if get_abstract_mesh().empty:
-            sharding = None
+            shard_rep = None
         else:
-            sharding = PartitionSpec(None)
+            shard_rep = PartitionSpec(None)
 
         nv = len(vectors)
-        melems = jnp.zeros((nv, nv), dtype=vectors[0].dtype)
+        sas = jnp.zeros((nv, nv), dtype=vectors[0].dtype)
         mvs = []
         for iv1, v1 in enumerate(vectors):
             mv1 = matvec(v1, *args)
             mvs.append(mv1)
             for iv2 in range(iv1 + 1, nv):
-                melems = melems.at[iv2, iv1].set(
-                    jnp.dot(vectors[iv2].conjugate(), mv1, out_sharding=sharding)
+                sas = sas.at[iv2, iv1].set(
+                    jnp.dot(vectors[iv2].conjugate(), mv1, out_sharding=shard_rep)
                 )
-        melems += melems.conjugate().T
+        sas += sas.conjugate().T
         for iv1, (v1, mv1) in enumerate(zip(vectors, mvs)):
-            melems = melems.at[iv1, iv1].set(
-                jnp.dot(v1.conjugate(), mv1, out_sharding=sharding)
+            sas = sas.at[iv1, iv1].set(
+                jnp.dot(v1.conjugate(), mv1, out_sharding=shard_rep)
             )
 
-        if nv == 2:
-            return eigenpair_2x2(melems)
-        return eigenpair_3x3(melems)
+        return sas
+
+    def rayleigh_ritz(*vectors):
+        sas = compute_sas(*vectors)
+
+        if len(vectors) == 2:
+            return eigenpair_2x2(sas)
+        return eigenpair_3x3(sas)
         # A more streamlined (but memory-consuming) implementation:
         # vectors = jnp.stack(vectors, axis=1)
         # melems = _mm(vectors.conjugate().T, matvec(vectors, *args), out_sharding=sharding)
