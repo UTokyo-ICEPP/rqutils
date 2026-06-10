@@ -272,7 +272,7 @@ def hproj(
         The projected Hamiltonian as a sparse matrix.
     """
     if not isinstance(hamiltonian, PauliSumXZ):
-        hamiltonian = PauliSumXZ.from_paulisum(hamiltonian)
+        hamiltonian = PauliSumXZ.from_paulisum(hamiltonian, add_padding=True)
     if not unique_states:
         states = np.unique(states, axis=0)
     states_p = np.packbits(states, axis=1)
@@ -311,7 +311,7 @@ def run_sqd(
     if log_level <= logging.DEBUG:
         jax.debug.print('Uniquifying states (size {})', states_size)
 
-    states_u = jnp.unique(states_p, axis=0, size=states_size, fill_value=255)
+    states_u = uniquify_states(states_p, states_size)
 
     if cache_level[0] == 1:
         if log_level <= logging.DEBUG:
@@ -401,9 +401,46 @@ def run_sqd(
     eigval, eigvec, _ = ground_locg(matvec, vinit, args=args, log_level=log_level)
     result = (eigval,)
     if return_eigvec:
+        if sharding:
+            eigvec = jax.reshard(eigvec, PartitionSpec(None))
+            states_u = jax.reshard(states_u, PartitionSpec(None))
         subspace_dim = jnp.searchsorted(states_u[:, 0] >> 7, 1)
         result += (eigvec, states_u, subspace_dim)
     return result
+
+
+@jax.jit(static_argnames=['states_size'])
+def uniquify_states(
+    states_p: StateList,
+    states_size: int
+) -> StateList:
+    """A stripped-down implementation of jnp.unique.
+
+    The returned array will have shape (states_size, states_p.shape[1]). If states_size is greater
+    than the number of unique states, the residual entries at the end are filled with 255.
+    """
+    # Perform a lexsort
+    iota = jax.lax.broadcasted_iota(np.int32, (states_p.shape[0],), 0)
+    perm = jax.lax.sort((*states_p.T, iota), dimension=0, num_keys=states_p.shape[1])[-1]
+    states_srt = states_p[perm]
+    # Uniqueness flag for elements 1 to N-1
+    is_unique = jnp.any(jax.lax.ne(states_srt[1:], states_srt[:-1]), axis=1)
+    # Element 0 is always considered unique -> add 1
+    total_unique = jnp.sum(is_unique, dtype=np.int32) + 1
+    # This cumsum(bincount(cumsum)) accounts for the uniqueness of the 0th element
+    idx_unique = jnp.cumsum(
+        jnp.bincount(
+            jnp.cumsum(is_unique, dtype=np.int32),
+            length=states_size
+        ),
+        dtype=np.int32
+    )
+    # Finally flag out filler slots by setting total_unique: to -1
+    if states_size != states_p.shape[0]:
+        iota = jax.lax.broadcasted_iota(np.int32, (states_size,), 0)
+    idx_unique = jnp.where(iota < total_unique, idx_unique, -1)
+    # With wrap_negative_indices=False we'll have 255 for filler slots
+    return states_srt.at[idx_unique].get(mode='fill', fill_value=255, wrap_negative_indices=False)
 
 
 @jax.jit
@@ -428,29 +465,37 @@ def get_xsource(
     to `V`.
 
     To find `A`, we first concatenate `S` and `S ^ X` into a `[2N, B]` array and perform a stable
-    sort along axis 0 to obtain an array `T`. Indices from `0` to `2N` is sorted together so that
+    sort along axis 0 to obtain an array `T`. Indices from `0` to `2N` are sorted together so that
     the resulting index array `I` has value `i` at index `k` such that `T[k] = S[i]` (`i < N`) or
     `T[k] = (S^X)[i-N]` (`i >= N`). Then, if `T[k] == T[k+1]`, `A[I[k]] = I[k+1] - N`. On the other
     hand, `T[k] != T[k+1]` where `I[k] < N` implies that the source bitstring does not exist for
     `S[I[k]]` and therefore `A[I[k]]` must be set to `-1`.
     """
+    size = states.shape[0]
     mapped_states = jnp.bitwise_xor(states, xsignature)  # S^X
     joined = jnp.concatenate([states, mapped_states], axis=0)
-    idx = jax.lax.iota(np.int32, joined.shape[0])
+    idx = jax.lax.iota(np.int32, 2 * size)
     # lax.sort seems to leak GPU memory; can lose as much as 5 GB when sorting x of shape (5M,9)
     sorted = jax.lax.sort(tuple(joined.T) + (idx,), num_keys=joined.shape[1])
     joined_sorted = jnp.stack(sorted[:-1], axis=1)  # T
     idx_sorted = sorted[-1]  # I
     invalid = np.array(-1, dtype=np.int32)
-    xsource = jnp.where(
+
+    source_idx = jnp.where(
         jnp.all(jnp.equal(joined_sorted[:-1], joined_sorted[1:]), axis=1),  # T[k] == T[k+1]
-        idx_sorted[1:] - states.shape[0],  # I[k+1] - N
+        idx_sorted[1:] - size,  # I[k+1] - N
         invalid
     )
-    # fill_value must be set to -1 because I[-1] < N is possible but xsources only contains up to
-    # I[-2]
-    xsource = jnp.extract(idx_sorted < states.shape[0], xsource, size=states.shape[0],
-                          fill_value=invalid) # I[k] < N
+    # Stripped-down jnp.nonzero implementation (with dtype control; othersize int64 is used
+    # unnecessarily)
+    tposition = jnp.cumsum(
+        jnp.bincount(
+            jnp.cumsum(idx_sorted < size, dtype=np.int32),
+            length=size
+        ),
+        dtype=np.int32
+    )
+    xsource = source_idx.at[tposition].get(mode='fill', fill_value=invalid)
     if not (mesh := get_abstract_mesh()).empty:
         xsource = jax.reshard(xsource, PartitionSpec(mesh.axis_names))
     return xsource
