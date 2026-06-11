@@ -174,7 +174,13 @@ def _ground_locg_matrix(
     vspace = None
     if jnp.issubdtype(xinit.dtype, jnp.integer):
         vspace = (mat.shape[1], mat.dtype)
-    return _ground_locg_callable(lambda x, a: _mm(a, x), xinit, (mat,), maxiter, tol,
+
+    def matvec(x):
+        return jax.lax.dot(mat, x,
+                           precision=(jax.lax.Precision.HIGHEST,) * 2,
+                           out_sharding=jax.typeof(x).sharding)
+
+    return _ground_locg_callable(matvec, xinit, (), maxiter, tol,
                                  vspace=vspace, debug=debug, log_level=log_level)
 
 
@@ -210,7 +216,7 @@ def _ground_locg_callable(
     def diagnostics(xcurr, ycurr, rcurr, theta, kappa=None, reltol=None, converged=None):
         sas = compute_sas(xcurr, ycurr, rcurr)
         axcurr = matvec(xcurr, *args)
-        rho = jnp.dot(xcurr.conjugate(), axcurr, out_sharding=jax.typeof(theta).sharding).real
+        rho = jnp.sum(xcurr.conjugate() * axcurr).real  # turns out to be faster than dot()
 
         if kappa is None:
             kappa = jnp.zeros(3, dtype=xcurr.dtype)
@@ -232,11 +238,6 @@ def _ground_locg_callable(
         }
 
     def compute_sas(*vectors):
-        if get_abstract_mesh().empty:
-            shard_rep = None
-        else:
-            shard_rep = PartitionSpec(None)
-
         nv = len(vectors)
         sas = jnp.zeros((nv, nv), dtype=vectors[0].dtype)
         mvs = []
@@ -244,14 +245,10 @@ def _ground_locg_callable(
             mv1 = matvec(v1, *args)
             mvs.append(mv1)
             for iv2 in range(iv1 + 1, nv):
-                sas = sas.at[iv2, iv1].set(
-                    jnp.dot(vectors[iv2].conjugate(), mv1, out_sharding=shard_rep)
-                )
+                sas = sas.at[iv2, iv1].set(jnp.sum(vectors[iv2].conjugate() * mv1))
         sas += sas.conjugate().T
         for iv1, (v1, mv1) in enumerate(zip(vectors, mvs)):
-            sas = sas.at[iv1, iv1].set(
-                jnp.dot(v1.conjugate(), mv1, out_sharding=shard_rep)
-            )
+            sas = sas.at[iv1, iv1].set(jnp.sum(v1.conjugate() * mv1))
 
         return sas
 
@@ -263,11 +260,21 @@ def _ground_locg_callable(
         return eigenpair_3x3(sas)
         # A more streamlined (but memory-consuming) implementation:
         # vectors = jnp.stack(vectors, axis=1)
-        # melems = _mm(vectors.conjugate().T, matvec(vectors, *args), out_sharding=sharding)
+        # melems = jnp.dot(vectors.conjugate().T, matvec(vectors, *args), out_sharding=sharding)
         # eigvals, eigvecs = jnp.linalg.eigh(SAS)
         # or
         # eigvecs, eigvals = jax.lax.linalg.eigh(melems, symmetrize_input=False)
         # return eigvals[0], eigvecs[:, 0]
+
+    def body_iter0(xcurr):
+        xnext = xcurr
+        ax = matvec(xcurr, *args)
+        rho = jnp.sum(xcurr.conjugate() * ax).real
+        rnext = ax - rho * xnext
+        if debug:
+            diag = diagnostics(xnext, jnp.zeros_like(xnext), rnext, rho)
+            return xnext, rnext, diag
+        return xnext, rnext
 
     def body_iter1(xcurr, rcurr):
         norm_rcurr = jnp.linalg.norm(rcurr)
@@ -341,16 +348,14 @@ def _ground_locg_callable(
     if log_level <= logging.DEBUG:
         jax.debug.print('Performing first LOBPCG steps')
 
-    norm_xinit = jnp.linalg.norm(xinit)
-    xinit /= norm_xinit
-    axinit = matvec(xinit, *args)
-    rho = jnp.dot(xinit.conjugate(), axinit, out_sharding=jax.typeof(norm_xinit).sharding).real
-    rinit = axinit - rho * xinit
+    xinit /= jnp.linalg.norm(xinit)
+
+    vs_iter0 = body_iter0(xinit)
     if debug:
-        diag0 = diagnostics(xinit, jnp.zeros_like(xinit), rinit, rho)
+        diag0 = vs_iter0[-1]
         diag0 = jax.tree.map(lambda a: jnp.expand_dims(a, 0), diag0)
 
-    vs_iter1 = body_iter1(xinit, rinit)
+    vs_iter1 = body_iter1(vs_iter0[0], vs_iter0[1])
     if debug:
         diag1 = vs_iter1[-1]
         diag1 = jax.tree.map(lambda a: jnp.expand_dims(a, 0), diag1)
@@ -377,22 +382,11 @@ def _ground_locg_callable(
     return eigval, xfinal, niter
 
 
-def _mm(a, b, precision=jax.lax.Precision.HIGHEST, out_sharding=None):
-    if out_sharding is None:
-        out_sharding = jax.typeof(b).sharding
-    return jax.lax.dot(a, b, precision=(precision, precision), out_sharding=out_sharding)
-
-
 def _project_out(basis, vector):
-    if get_abstract_mesh().empty:
-        sharding = None
-    else:
-        sharding = PartitionSpec(None)
-
     for _ in range(2):
         ips = []
         for vb in basis:
-            ips.append(jnp.dot(vb.conjugate(), vector, out_sharding=sharding))
+            ips.append(jnp.sum(vb.conjugate() * vector))
         for vb, ip in zip(basis, ips):
             vector -= vb * ip
         norm = jnp.linalg.norm(vector)
@@ -416,18 +410,18 @@ def _project_out(basis, vector):
     for _ in range(2):
         ips = []
         for vb in basis:
-            ips.append(jnp.dot(vb.conjugate(), vector, out_sharding=sharding))
+            ips.append(jnp.sum(vb.conjugate() * vector))
         for vb, ip in zip(basis, ips):
             vector -= vb * ip
 
     # A more streamlined (but memory-consuming) implementation
     # basis = jnp.stack(basis, axis=1)
     # for _ in range(2):
-    #     vector -= _mm(basis, _mm(basis.conjugate().T, vector, out_sharding=sharding))
+    #     vector -= jnp.sum(basis * jnp.sum(basis.conjugate() * vector, axis=1)[None, :], axis=1)
     #     norm = jnp.linalg.norm(vector)
     #     vector /= jnp.where(norm == 0., 1., norm)
     # for _ in range(2):
-    #     vector -= _mm(basis, _mm(basis.conjugate().T, vector, out_sharding=sharding))
+    #     vector -= jnp.sum(basis * jnp.sum(basis.conjugate() * vector, axis=1)[None, :], axis=1)
 
     return vector * (jnp.linalg.norm(vector) >= 0.99).astype(vector.dtype)
 
