@@ -37,14 +37,18 @@ from rqutils._types import MatrixDimension
 
 type PrintReturnType = str
 if HAS_MPL:
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
     MATPLOTLIB_INLINE_BACKENDS = {
         "module://ipykernel.pylab.backend_inline",
         "module://matplotlib_inline.backend_inline",
         "nbAgg",
     }
 
-    PrintReturnType |= mpl.figure.Figure
-
+    PrintReturnType |= Figure
+else:
+    type Axes = Any
+    type Figure = Any
 
 def qprint(
     qobj: Any,
@@ -269,7 +273,7 @@ class QPrintBase(ABC):
 
         return expr
 
-    def mpl(self, ax: Optional[mpl.axes.Axes] = None) -> mpl.figure.Figure | None:
+    def mpl(self, ax: Optional[Axes] = None) -> Figure | None:
         """Display or return the expression as a matplotlib figure."""
         if not HAS_MPL:
             raise RuntimeError('Matplotlib is not available')
