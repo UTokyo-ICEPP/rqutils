@@ -16,5 +16,14 @@ help:
 
 # Catch-all target: route all unknown targets to Sphinx using the new
 # "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).
+html: Makefile
+	sphinx-apidoc -f -e --automodule-options "show-inheritance" --no-toc -o $(SOURCEDIR)/apidoc ../rqutils/
+	rm $(SOURCEDIR)/apidoc/rqutils.rst
+	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+
+clean: Makefile
+	rm -rf $(SOURCEDIR)/apidoc
+	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+
 %: Makefile
 	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)

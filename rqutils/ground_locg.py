@@ -1,7 +1,7 @@
 r"""
-==================================================
-Single-vector LOBPCG. (:mod:`rqutils.ground_locg`)
-==================================================
+====================
+Single-vector LOBPCG
+====================
 
 .. currentmodule:: rqutils.ground_locg
 
@@ -68,13 +68,13 @@ matrix :math:`A`:
 
 .. math::
 
-    p & \leftarrow \frac{r_{i}}{|r_{i}|}
+    p & \leftarrow \frac{r_{i}}{|r_{i}|} \\
     \theta, \kappa & \leftarrow R_A[x_{i}, y_{i}, p] \\
     s & \leftarrow \kappa_1 y_{i} + \kappa_2 p \\
     t & \leftarrow \frac{\kappa_0}{|s|} s - |s| x_{i} \\
-    u & \leftarrow \kappa_0 x_{i} + s
-    x_{i+1} & \leftarrow \frac{u}{|u|}
-    y_{i+1} & \leftarrow \frac{t}{|t|}
+    u & \leftarrow \kappa_0 x_{i} + s \\
+    x_{i+1} & \leftarrow \frac{u}{|u|} \\
+    y_{i+1} & \leftarrow \frac{t}{|t|} \\
     r_{i+1} & \leftarrow A x_{i+1} - \theta x_{i+1}.
 
 The normal vector :math:`y_{i}` is orthogonal to :math:`x_{i}` and :math:`r_{i}` and lies in the
@@ -114,12 +114,7 @@ References
 Single-vector LOBPCG API
 ========================
 
-.. autosummary::
-   :toctree: ../generated
-
-   ground_locg
-   eigenpair_2x2
-   eigenpair_3x3
+.. autofunction:: ground_locg
 """
 from collections.abc import Callable
 import logging

@@ -3,7 +3,7 @@ r"""
 GPU-efficient symplectic representation of Pauli sums (:mod:`rqutils.paulis.symplectic`)
 ========================================================================================
 
-.. currentmodule: rqutils.paulis.symplectic
+.. currentmodule:: rqutils.paulis.symplectic
 
 Symplectic representation of a Pauli string
 ===========================================
@@ -21,11 +21,7 @@ where :math:`x` (X signature) and :math:`z` (Z signature) are binary vectors of 
 Symplectic Pauli sum representation API
 =======================================
 
-.. autosummary::
-   :toctree: ../generated
-
-   PauliSumXZ
-   to_xzrep
+.. autoclass:: PauliSumXZ
 """
 from dataclasses import dataclass, field
 from typing import Any

@@ -1,19 +1,16 @@
 """
-============================================
-Math utility functions (:mod:`rqutils.math`)
-============================================
+======================
+Math utility functions
+======================
 
 .. currentmodule:: rqutils.math
 
 Math API
 ========
 
-.. autosummary::
-   :toctree: ../generated
-
-   matrix_ufunc
-   matrix_exp
-   matrix_angle
+.. autofunction:: matrix_ufunc
+.. autofunction:: matrix_exp
+.. autofunction:: matrix_angle
 """
 from collections.abc import Callable
 import sys

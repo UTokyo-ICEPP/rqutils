@@ -1,7 +1,7 @@
 r"""
-==========================================================
-Generalized Pauli matrices (:mod:`rqutils.paulis.general`)
-==========================================================
+==========================
+Generalized Pauli matrices
+==========================
 
 .. currentmodule:: rqutils.paulis.general
 
@@ -122,7 +122,7 @@ Pauli Matrices API
 ==================
 
 .. autosummary::
-   :toctree: ../generated
+   :toctree: ../apidoc
 
    paulis
    components

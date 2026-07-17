@@ -1,7 +1,26 @@
 """
-===================================================
-Simple statevector simulator (:mod:`rqutils.svsim`)
-===================================================
+===============================
+Scalable state vector simulator
+===============================
+
+**svsim** is a GPU-accelerated state vector simulator implemented in
+`JAX <https://docs.jax.dev/en/latest/index.html>`__. The implementation focuses on gate execution
+speed and scalability. In practice this means:
+
+* Only a very limited gate set is supported. When given as a qiskit QuantumCircuit, the input
+  circuit can only contain ``x``, ``y``, ``z``, ``cz``, ``rx``, ``ry``, ``rz``, and ``rzz`` gates.
+* Using the `Multi-device <https://docs.jax.dev/en/latest/parallel.html>`__ and
+  `Multi-controller <https://docs.jax.dev/en/latest/multi_process.html>`__ features of JAX,
+  circuits for large (32+) numbers of qubits can be simulated.
+
+Usage examples can be found at
+`examples/svsim.py <https://github.com/UTokyo-ICEPP/rqutils/tree/main/examples/svsim.py>`__.
+
+.. currentmodule:: rqutils.svsim
+
+.. autofunction:: svsim
+.. autoclass:: CircuitXZ
+.. autofunction:: to_circuitxz
 """
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -31,13 +50,35 @@ class CircuitXZ:
 
 type GateSpec = tuple[str, int | Sequence[int]] | tuple[str, int | Sequence[int], Any]
 type CircuitInput = CircuitXZ | list[GateSpec]
+if HAS_QISKIT:
+    CircuitInput |= QuantumCircuit
 
 
 def svsim(
     circuit: CircuitInput,
     initial_state: NDArray[np.complex128] | int = 0,
     out_sharding: Optional[NamedSharding | PartitionSpec] = None
-):
+) -> jax.Array:
+    """Simulate the quantum circuit.
+
+    The ``circuit`` argument can be given in three formats:
+
+    * Qiskit ``QuantumCircuit``
+    * ``CircuitXZ``
+    * A list of gate specifiers
+
+    A gate specifier is a 2-tuple ``(name, qubit)`` (for nonparametric gates) or a 3-tuple
+    ``(name, qubit, angle)`` (rotation gates). The gate name must be one of ``x``, ``y``, ``z``,
+    ``cz``, ``rx``, ``ry``, ``rz``, or ``rzz``.
+    
+    Args:
+        circuit: Quantum circuit to simulate.
+        initial_state: Initial state vector or the one-hot index.
+        out_sharding: Manual specification of the sharding of the final state vector.
+    
+    Returns:
+        Final state vector as a (sharded) JAX Array.
+    """
     if not isinstance(circuit, CircuitXZ):
         circuit = to_circuitxz(circuit)
 
@@ -49,7 +90,8 @@ def do_svsim(
     circuit: CircuitXZ,
     initial_state: NDArray[np.complex128] | int = 0,
     out_sharding: Optional[NamedSharding | PartitionSpec] = None
-):
+) -> jax.Array:
+    """JIT-Compiled core of the simulator."""
     if out_sharding is None and not (mesh := get_abstract_mesh()).empty:
         out_sharding = PartitionSpec(mesh.axis_names)
 
@@ -80,8 +122,11 @@ def do_svsim(
     )[0]
 
 
-def to_circuitxz(circuit: CircuitInput):
+def to_circuitxz(circuit: CircuitInput) -> CircuitXZ:
     """Translate circuit data given as a list of GateSpecs or a QuantumCircuit into signatures."""
+    if isinstance(circuit, CircuitXZ):
+        return circuit
+
     num_qubits = None
 
     if HAS_QISKIT and isinstance(circuit, QuantumCircuit):

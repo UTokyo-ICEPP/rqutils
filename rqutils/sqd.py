@@ -1,7 +1,7 @@
 r"""
-===========================================================================================
-Sample-based quantum diagonalization of general Pauli-sum Hamiltonians (:mod:`rqutils.sqd`)
-===========================================================================================
+======================================================================
+Sample-based quantum diagonalization of general Pauli-sum Hamiltonians
+======================================================================
 
 .. currentmodule:: rqutils.sqd
 
@@ -26,6 +26,9 @@ The first point will have to be done with ``np.unique`` or an equivalent acceler
 the last point, we can use the `ground_locg` solver provided in this package, which takes a
 matrix-vector application function and an initial-guess vector as inputs. The central task here is
 thus providing the matvec function that covers the second point.
+
+Usage examples can be found at
+`examples/sqd.py <https://github.com/UTokyo-ICEPP/rqutils/tree/main/examples/sqd.py>`__.
 
 Algorithm
 =========
@@ -55,7 +58,7 @@ on which the Hamiltonian is projected. We then define the initial one-hot vector
 as the input to the LOBPCG function.
 
 Let :math:`J` be the number of distinct X signatures in the Hamiltonian, and :math:`K^{(j)}` be the
-number of Z signatures and coefficients associated with the :math:`j`th X signature. The
+number of Z signatures and coefficients associated with the :math:`j` th X signature. The
 matrix-vector operation to be passed to the solver acts on the length-:math:`N` vector :math:`v` of
 coefficients as
 
@@ -146,11 +149,8 @@ When the source indices are cached but neither the sign bits nor the diagonals a
 SQD API
 =======
 
-.. autosummary::
-   :toctree: ../generated
-
-   sqd
-   hproj
+.. autofunction:: sqd
+.. autofunction:: hproj
 """
 from collections.abc import Sequence
 import logging
@@ -188,21 +188,22 @@ def sqd(
     r"""Perform a sample-based quantum diagonalization of the Hamiltonian.
 
     The Hamiltonian can be given in three different forms:
-    - A tuple of two lists, where the first list enumerates the Pauli strings :math:`Q` as strs and
+    
+    * A tuple of two lists, where the first list enumerates the Pauli strings :math:`Q` as strs and
       the second contains the coefficients :math:`\alpha`.
-    - Qiskit SparsePauliOp
-    - PauliSumXZ (From ``rqutils.paulis.symplectic``)
+    * Qiskit SparsePauliOp
+    * PauliSumXZ (From :mod:`rqutils.paulis.symplectic`)
 
     States must have binary values and can be passed as an array of integers or booleans.
 
     Internally, the states are bit-packed and represented by :math:`\lceil (n+1)/8 \rceil`
-    ``uint8``s, where the extra bit is placed at position 0 and serves as the indicator for spurious
-    (fill-in) entries. Accordingly, the PauliSumXZ representation of the Hamiltonian must be made
-    with ``add_padding=True``.
+    ``uint8`` s, where the extra bit is placed at position 0 and serves as the indicator for
+    spurious (fill-in) entries. Accordingly, the PauliSumXZ representation of the Hamiltonian must
+    be made with ``add_padding=True``.
 
     Cache level is a 2-tuple where the first element specifies the caching of the source indices
     (0=no caching, 1=cached) and the second specifies the caching of the diagonal elements (0=no
-    caching, 1=cache sign bits, 2=cache diagonals)
+    caching, 1=cache sign bits, 2=cache diagonals).
 
     Args:
         hamiltonian: Hamiltonian to be projected and diagonalized.
@@ -255,10 +256,11 @@ def hproj(
     """Return the Hamiltonian projected onto the given subspace.
 
     The Hamiltonian can be given in three different forms:
-    - A tuple of two lists, where the first list enumerates the Pauli strings :math:`Q` as strs and
+    
+    * A tuple of two lists, where the first list enumerates the Pauli strings :math:`Q` as strs and
       the second contains the coefficients :math:`\alpha`.
-    - Qiskit SparsePauliOp
-    - PauliSumXZ (From ``rqutils.paulis.symplectic``)
+    * Qiskit SparsePauliOp
+    * PauliSumXZ (From :mod:`rqutils.paulis.symplectic`)
 
     States must have binary values and can be passed as an array of integers or booleans.
 

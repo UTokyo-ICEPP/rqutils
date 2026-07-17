@@ -8,10 +8,7 @@ Pretty-printer for quantum objects (:mod:`rqutils.qprint`)
 QPrint API
 ==========
 
-.. autosummary::
-   :toctree: ../generated
-
-   qprint
+.. autofunction:: qprint
 """
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
