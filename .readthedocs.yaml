@@ -7,10 +7,9 @@ build:
 
 python:
   install:
-#    - requirements: requirements.txt
-    requirements: docs/requirements.txt
-    method: uv
-    path: .
+    - method: uv
+      command: pip
+      path: .
 
 sphinx:
   configuration: docs/source/conf.py
