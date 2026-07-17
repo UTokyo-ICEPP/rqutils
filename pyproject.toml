@@ -27,6 +27,7 @@ dependencies = [
 mpl = ["matplotlib"]
 qutip = ["qutip"]
 qiskit = ["qiskit"]
+docs = ["sphinx", "sphinx-rtd-theme"]
 
 [project.urls]
 Homepage = "https://github.com/UTokyo-ICEPP/rqutils"
