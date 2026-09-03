@@ -129,6 +129,7 @@ def ground_locg(
     mat: Callable[[jax.Array], jax.Array] | jax.Array,
     xinit: jax.Array | int,
     args: tuple = (),
+    orth: tuple[NDArray, ...] | NDArray = (),
     maxiter: int = 1000,
     tol: Optional[float] = None,
     vspace: tuple[int, DTypeLike] | None = None,
@@ -141,6 +142,7 @@ def ground_locg(
         xinit: Initial vector. If given as an integer (requires ``vspace`` if ``mat`` is callable),
             a one-hot vector is created internally.
         args: Additional arguments to callable ``mat``.
+        orth: Vectors to orthogonalize the result against.
         maxiter: Maximum number of gradient descent iterations.
         tol: Convergence condition.
         vspace: Specification (dimension, dtype) of the vector space. Required only when ``mat`` is
@@ -151,16 +153,20 @@ def ground_locg(
         The smallest eigenvalue, its eigenvector, and the number of gradient descent iterations
         required to achieve the solution.
     """
+    if not isinstance(orth, tuple):
+        orth = (orth,)
+
     if callable(mat):
-        return _ground_locg_callable(mat, xinit, args, maxiter, tol, vspace=vspace,
+        return _ground_locg_callable(mat, xinit, args, orth, maxiter, tol, vspace=vspace,
                                      log_level=log_level)
-    return _ground_locg_matrix(mat, xinit, maxiter, tol, log_level=log_level)
+    return _ground_locg_matrix(mat, xinit, orth, maxiter, tol, log_level=log_level)
 
 
 @jax.jit(static_argnames=['maxiter', 'debug', 'log_level'])
 def _ground_locg_matrix(
     mat: jax.Array,
     xinit: jax.Array,
+    orth: tuple[jax.Array, ...],
     maxiter: int,
     tol: jax.Array | float | None,
     debug: bool = False,
@@ -175,7 +181,7 @@ def _ground_locg_matrix(
                            precision=(jax.lax.Precision.HIGHEST,) * 2,
                            out_sharding=jax.typeof(x).sharding)
 
-    return _ground_locg_callable(matvec, xinit, (), maxiter, tol,
+    return _ground_locg_callable(matvec, xinit, (), orth, maxiter, tol,
                                  vspace=vspace, debug=debug, log_level=log_level)
 
 
@@ -192,18 +198,23 @@ def _ground_locg_callable(
     matvec: Callable[[jax.Array], jax.Array],
     xinit: jax.Array | int,
     args: tuple,
+    orth: tuple[jax.Array, ...],
     maxiter: int,
     tol: jax.Array | float | None,
     vspace: tuple[int, DTypeLike] | None = None,
     debug: bool = False,
     log_level: int = logging.WARNING
 ):
+    orth = tuple(v / jnp.linalg.norm(v) for v in orth)
+
     if jnp.issubdtype(xinit.dtype, jnp.integer):
         sharding = None
         if not (mesh := get_abstract_mesh()).empty:
             sharding = PartitionSpec(mesh.axis_names)
         xinit = (jax.lax.broadcasted_iota(xinit.dtype, (vspace[0],), 0, out_sharding=sharding)
                  == xinit).astype(vspace[1])
+        if orth:
+            xinit = _project_out(orth, xinit)
 
     if tol is None:
         tol = float(jnp.finfo(xinit.dtype).eps)
@@ -264,6 +275,8 @@ def _ground_locg_callable(
     def body_iter0(xcurr):
         xnext = xcurr
         ax = matvec(xcurr, *args)
+        if orth:
+            ax = _project_out(orth, ax, normalize=False)
         rho = jnp.sum(xcurr.conjugate() * ax).real
         rnext = ax - rho * xnext
         if debug:
@@ -279,7 +292,12 @@ def _ground_locg_callable(
         tmp_u = xcurr * kappa[0] + tmp_p * kappa[1]
         xnext = tmp_u / jnp.linalg.norm(tmp_u)
         ynext = tmp_t / jnp.linalg.norm(tmp_t)
+        if orth:
+            # xnext and ynext is analytically already orthogonal to orth
+            xnext = _project_out(orth, xnext)
         rnext = matvec(xnext, *args) - theta * xnext
+        if orth:
+            rnext = _project_out(orth, rnext, normalize=False)
         if debug:
             diag = diagnostics(xnext, ynext, rnext, theta, jnp.insert(kappa, 1, 0.))
             return xnext, ynext, rnext, diag
@@ -303,8 +321,14 @@ def _ground_locg_callable(
         tmp_u = xcurr * kappa[0] + tmp_s
         xnext = tmp_u / jnp.linalg.norm(tmp_u)
         ynext = tmp_t / jnp.linalg.norm(tmp_t)
+        if orth:
+            # xnext and ynext is analytically already orthogonal to orth but we want especially
+            # xnext to be as clean as possible
+            xnext = _project_out(orth, xnext)
         axnext = matvec(xnext, *args)
         rnext = axnext - xnext * theta
+        if orth:
+            rnext = _project_out(orth, rnext, normalize=False)
         # Use the intermediate AX for relative tolerance.
         #
         # Comments from lobpcg_standard:
@@ -377,16 +401,7 @@ def _ground_locg_callable(
     return eigval, xfinal, niter
 
 
-def _project_out(basis, vector):
-    for _ in range(2):
-        ips = []
-        for vb in basis:
-            ips.append(jnp.sum(vb.conjugate() * vector))
-        for vb, ip in zip(basis, ips):
-            vector -= vb * ip
-        norm = jnp.linalg.norm(vector)
-        vector /= jnp.where(norm == 0., 1., norm)
-
+def _project_out(basis, vector, normalize=True, rounds=2):
     # Comments from the original function:
     # ================
     # It's crucial to end on a subtraction of the original basis.
@@ -402,12 +417,18 @@ def _project_out(basis, vector):
     # We zero out any columns that are even remotely suspicious, so the invariant
     # that [basis, U] is zero-or-orthogonal is ensured.
     # ================
-    for _ in range(2):
+    for iround in range(2 * rounds):
         ips = []
         for vb in basis:
             ips.append(jnp.sum(vb.conjugate() * vector))
         for vb, ip in zip(basis, ips):
             vector -= vb * ip
+        if normalize and iround < rounds:
+            norm = jnp.linalg.norm(vector)
+            vector /= jnp.where(norm == 0., 1., norm)
+
+    if normalize:
+        vector *= (jnp.linalg.norm(vector) >= 0.99).astype(vector.dtype)
 
     # A more streamlined (but memory-consuming) implementation
     # basis = jnp.stack(basis, axis=1)
@@ -418,7 +439,7 @@ def _project_out(basis, vector):
     # for _ in range(2):
     #     vector -= jnp.sum(basis * jnp.sum(basis.conjugate() * vector, axis=1)[None, :], axis=1)
 
-    return vector * (jnp.linalg.norm(vector) >= 0.99).astype(vector.dtype)
+    return vector
 
 
 @jax.jit
