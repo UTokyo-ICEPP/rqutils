@@ -176,6 +176,7 @@ except ImportError:
     pass
 type Vector = np.ndarray[tuple[int], np.dtype[np.inexact]]
 type StateList = np.ndarray[tuple[int, int], np.dtype[np.uint8]]
+type PackedStateList = np.ndarray[tuple[int, int], np.dtype[np.uint8]]
 
 
 def sqd(
@@ -299,7 +300,7 @@ def hproj(
 @jax.jit(static_argnames=['states_size', 'return_eigvec', 'cache_level', 'log_level'])
 def run_sqd(
     hamiltonian: PauliSumXZ,
-    states_p: StateList,
+    states_p: PackedStateList,
     states_size: int,
     return_eigvec: bool,
     cache_level: tuple[int, int] = (1, 0),
@@ -411,10 +412,11 @@ def run_sqd(
     return result
 
 
-@jax.jit(static_argnames=['states_size'])
+@jax.jit(static_argnames=['states_size', 'return_indices'])
 def uniquify_states(
-    states_p: StateList,
-    states_size: int
+    states_p: PackedStateList,
+    states_size: int,
+    return_indices: bool = False
 ) -> StateList:
     """A stripped-down implementation of jnp.unique.
 
@@ -442,17 +444,23 @@ def uniquify_states(
         iota = jax.lax.broadcasted_iota(np.int32, (states_size,), 0)
     idx_unique = jnp.where(iota < total_unique, idx_unique, -1)
     # With wrap_negative_indices=False we'll have 255 for filler slots
-    return states_srt.at[idx_unique].get(mode='fill', fill_value=255, wrap_negative_indices=False)
+    uniquified = states_srt.at[idx_unique].get(mode='fill', fill_value=255,
+                                               wrap_negative_indices=False)
+    if return_indices:
+        return uniquified, perm.at[idx_unique].get(mode='fill', fill_value=-1,
+                                                   wrap_negative_indices=False)
+    return uniquified
 
 
-@jax.jit
+@jax.jit(static_argnames=['sorted_input'])
 def get_xsource(
     xsignature: NDArray[np.uint8],
-    states: StateList
+    states_p: PackedStateList,
+    sorted_input: bool = True
 ) -> jax.Array:
     """Return an index array into the source of an X operation.
 
-    Let `V` be a vector of complex or float values with shape `[N]`, `S` be a lex-sorted 2-d array
+    Let `V` be a vector of complex or float values with shape `[N]`, `S` be a unique 2-d array
     of uint8 with shape `[N, B]` where `B = ceil(Q/8)`, and `X` be a vector of uint8 with shape
     `[B]`. An unpacked (truncated to `Q` bits) `X` is a bitstring that represents the location of X
     being applied to the states in `S`; X (I) is applied to qubit `q` if `Q-q-1`th bit is 1 (0). Let
@@ -473,9 +481,11 @@ def get_xsource(
     hand, `T[k] != T[k+1]` where `I[k] < N` implies that the source bitstring does not exist for
     `S[I[k]]` and therefore `A[I[k]]` must be set to `-1`.
     """
-    size = states.shape[0]
-    mapped_states = jnp.bitwise_xor(states, xsignature)  # S^X
-    joined = jnp.concatenate([states, mapped_states], axis=0)
+    size = states_p.shape[0]
+    if not sorted_input:
+        states_p, sort_indices = uniquify_states(states_p, size, return_indices=True)
+    mapped_states = jnp.bitwise_xor(states_p, xsignature)  # S^X
+    joined = jnp.concatenate([states_p, mapped_states], axis=0)
     idx = jax.lax.iota(np.int32, 2 * size)
     # lax.sort seems to leak GPU memory; can lose as much as 5 GB when sorting x of shape (5M,9)
     sorted = jax.lax.sort(tuple(joined.T) + (idx,), num_keys=joined.shape[1])
@@ -498,6 +508,11 @@ def get_xsource(
         dtype=np.int32
     )
     xsource = source_idx.at[tposition].get(mode='fill', fill_value=invalid)
+    if not sorted_input:
+        xsource = jnp.arange(size).at[sort_indices].set(
+            sort_indices.at[xsource].get(mode='fill', fill_value=invalid,
+                                         wrap_negative_indices=False)
+        )
     if not (mesh := get_abstract_mesh()).empty:
         xsource = jax.reshard(xsource, PartitionSpec(mesh.axis_names))
     return xsource
