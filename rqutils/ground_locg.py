@@ -208,11 +208,16 @@ def _ground_locg_callable(
     orth = tuple(v / jnp.linalg.norm(v) for v in orth)
 
     if jnp.issubdtype(xinit.dtype, jnp.integer):
-        sharding = None
-        if not (mesh := get_abstract_mesh()).empty:
+        ndim, dtype = vspace[:2]
+        if len(vspace) == 3:
+            sharding = vspace[2]
+        elif not (mesh := get_abstract_mesh()).empty:
             sharding = PartitionSpec(mesh.axis_names)
-        xinit = (jax.lax.broadcasted_iota(xinit.dtype, (vspace[0],), 0, out_sharding=sharding)
-                 == xinit).astype(vspace[1])
+        else:
+            sharding = None
+            
+        xinit = (jax.lax.broadcasted_iota(xinit.dtype, (ndim,), 0, out_sharding=sharding)
+                 == xinit).astype(dtype)
         if orth:
             xinit = _project_out(orth, xinit)
 
