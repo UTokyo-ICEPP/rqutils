@@ -20,10 +20,11 @@ dependencies = [
     "numpy",
     "scipy",
     "h5py",
-    "jax[cuda12]"
+    "jax"
 ]
 
 [project.optional-dependencies]
+cuda12 = ["jax[cuda12]"]
 mpl = ["matplotlib"]
 qutip = ["qutip"]
 qiskit = ["qiskit"]
