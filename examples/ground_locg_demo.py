@@ -4,7 +4,8 @@ import numpy as np
 import h5py
 import jax
 import jax.numpy as jnp
-from jax.sharding import AxisType
+from jax.sharding import AxisType, Mesh
+from jax.experimental.mesh_utils import create_hybrid_device_mesh
 from rqutils.ground_locg import ground_locg
 
 
@@ -19,7 +20,7 @@ def matvec(vec, hx):
     def xvec(carry, bit):
         vec, result = carry
         source = indices() ^ (1 << bit)
-        return (vec, result + vec.at[source].get()), None
+        return (vec, result + vec.at[source].get(out_sharding=sharding)), None
 
     def zzvec(carry, bits):
         vec, result = carry
@@ -41,6 +42,7 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--num-qubits", type=int, default=30, help="Number of qubits")
     parser.add_argument("--hx", default='0.1,2.1,21', help="Transverse field strengths")
+    parser.add_argument("--max-level", type=int, default=1, help="Maximum level")
     parser.add_argument("--out", default='tfim.h5', help="Output file name")
     parser.add_argument("--gpus")
     parser.add_argument('--localmpi', action='store_true')
@@ -64,13 +66,30 @@ if __name__ == "__main__":
         else:
             os.environ['CUDA_VISIBLE_DEVICES'] = options.gpus
 
-        ngpu = jax.device_count()
-        nax = np.log2(ngpu).astype(int)
-        if 2 ** nax != ngpu:
+        ndev = jax.device_count()
+        nax = np.log2(ndev).astype(int)
+        if 2 ** nax != ndev:
             raise ValueError('Invalid ngpu')
-        mesh_shape = (2,) * nax
         axis_names = tuple(string.ascii_lowercase[:nax])
-        jax.set_mesh(jax.make_mesh(mesh_shape, axis_names, axis_types=(AxisType.Explicit,) * nax))
+
+        if options.gpus == 'mpi':
+            unique_slices = set(getattr(d, 'slice_index', 0) for d in jax.devices())
+            num_slices = len(unique_slices)
+            ndev_per_slice = ndev // num_slices
+            nax_per_slice = np.log2(ndev_per_slice).astype(int)
+            if 2 ** nax_per_slice != ndev_per_slice:
+                raise ValueError('Invalid ndev_per_slice')
+
+            inner_mesh_shape = (1,) * (nax - nax_per_slice) + (2,) * nax_per_slice
+            outer_mesh_shape = (2,) * (nax - nax_per_slice) + (1,) * nax_per_slice
+            LOG.info('Inner mesh shape: %s, outer mesh shape: %s',
+                     inner_mesh_shape, outer_mesh_shape)
+            mesh = Mesh(create_hybrid_device_mesh(inner_mesh_shape, outer_mesh_shape),
+                        axis_names=axis_names, axis_types=(AxisType.Explicit,) * nax)
+        else:
+            mesh = jax.make_mesh((2,) * nax, axis_names, axis_types=(AxisType.Explicit,) * nax)
+
+        jax.set_mesh(mesh)
 
     vspace = (2 ** options.num_qubits, np.float64)
 
@@ -78,13 +97,23 @@ if __name__ == "__main__":
     hxs = np.linspace(float(hx_args[0]), float(hx_args[1]), int(hx_args[2]))
 
     def get_ground_states(_, hx):
-        val0, vec0 = ground_locg(matvec, 0, args=(hx,), vspace=vspace, tol=1.e-14)[:2]
-        val1 = ground_locg(matvec, vspace[0] - 1, args=(hx,), orth=(vec0,), vspace=vspace,
-                           tol=1.e-12)[0]
-        return None, jnp.stack([val0, val1])
+        vals = []
+        orth = ()
+        init = 0
+        tol = 1.e-14
+        for _ in range(options.max_level):
+            val, vec = ground_locg(matvec, init, args=(hx,), orth=orth, vspace=vspace,
+                                   tol=tol)[:2]
+            vals.append(val)
+            orth += (vec,)
+            init = vspace[0] - 1
+            tol *= 10.
+        vals.append(ground_locg(matvec, init, args=(hx,), orth=orth, vspace=vspace, tol=tol)[0])
+        return None, jnp.stack(vals)
 
     eigvals = jax.lax.scan(get_ground_states, None, hxs)[1]
 
-    with h5py.File(options.out, 'w') as f:
-        f.create_dataset('hxs', data=hxs)
-        f.create_dataset('eigvals', data=eigvals)
+    if jax.process_index() == 0:
+        with h5py.File(options.out, 'w') as f:
+            f.create_dataset('hxs', data=hxs)
+            f.create_dataset('eigvals', data=eigvals)
