@@ -107,7 +107,7 @@ bits will require :math:`\kappa N` bytes, where
 
 .. math::
 
-    \kappa = \lceil \frac{\sum_{j} K^{(j)}}{8} \rceil
+    \kappa = \left\lceil \frac{\sum_{j} K^{(j)}}{8} \right\rceil
 
 is the number of bytes required to pack the sign bits for each vector entry. This "dense" packing
 however may cause inefficiencies in computation that defeats the purpose of caching. For a more
@@ -115,7 +115,7 @@ straightforward caching, the memory requirement is inflated to :math:`\bar{\kapp
 
 .. math::
 
-    \bar{\kappa} = \lceil \frac{\max_{j} K^{(j)}}{8} \rceil.
+    \bar{\kappa} = \left\lceil \frac{\max_{j} K^{(j)}}{8} \right\rceil.
 
 If the entire composition of the coefficients are cached instead of the sign bits, :math:`8 J N` or
 :math:`16 J N` bytes are used, depending on whether the vector is real or complex (i.e., if there
@@ -125,8 +125,9 @@ Given that identifying :math:`[j^{i}]` is an expensive operation, while the othe
 operations are not, the default behavior of this function is to cache only the source indices.
 Note however that there are cases when further caching can actually be advantageous also in terms of
 memory. This is because :math:`S` will not be used after caching both the source indices and sign
-bits / coefficient sums. Since :math:`S` occupies :math:`\lceil n/8 \rceil N` bytes of memory,
-caching setting should be adjusted according to the values of :math:`n` and :math:`\{K^{(j)}\}_j`.
+bits / coefficient sums. Since :math:`S` occupies :math:`\left\lceil n/8 \right\rceil N` bytes of
+memory, caching setting should be adjusted according to the values of :math:`n` and
+:math:`\{K^{(j)}\}_j`.
 
 Distributed arrays and scaling limits
 =====================================
@@ -139,8 +140,8 @@ aggressive caching strategy described above will be possible this way.
 However, there is a limit to scaling in :math:`N` (SQD subspace dimension) imposed by the need to
 sort the states list during the initial uniquification, and also whenever the source indices for an
 X signature is computed. At the moment, sorting must take place within a single device, with at most
-:math:`2^32` elements involved. Furthermore, source indices identification sorts through a stack of
-two state lists. Therefore, the maximum achievable :math:`N` is :math:`2^31`. A comparable limit
+:math:`2^{32}` elements involved. Furthermore, source indices identification sorts through a stack of
+two state lists. Therefore, the maximum achievable :math:`N` is :math:`2^{31}`. A comparable limit
 is set by the GPU memory, which is at most O(100)GB per device as of mid-2026.
 
 When the source indices are cached but neither the sign bits nor the diagonals are, the state list
