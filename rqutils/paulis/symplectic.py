@@ -31,7 +31,6 @@ from numpy.typing import NDArray
 import jax
 import jax.numpy as jnp
 from jax.tree_util import register_dataclass
-from jax.sharding import PartitionSpec, get_abstract_mesh
 try:
     from qiskit.quantum_info import SparsePauliOp
     HAS_QISKIT = True
