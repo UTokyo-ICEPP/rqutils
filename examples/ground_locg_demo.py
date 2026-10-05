@@ -4,77 +4,35 @@ import numpy as np
 import h5py
 import jax
 import jax.numpy as jnp
-from jax.sharding import AxisType, PartitionSpec, NamedSharding
+from jax.sharding import AxisType
 from rqutils.ground_locg import ground_locg
 
 
-def get_shape_and_shardings(vec, qubit_partitioning):
-    shape = tuple(2 ** np.array(qubit_partitioning))
-
+@jax.jit
+def matvec(vec, hx):
+    num_qubits = np.round(np.log2(vec.shape[0])).astype(int)
     sharding = jax.typeof(vec).sharding
-    if sharding.num_devices == 0:
-        return shape, None, None
 
-    in_spec = sharding.spec[0]  # ('X', 'Y', 'Z', ...)
-    partitions = ()
-    ipart = 0
-    for nq in qubit_partitioning:
-        partitions += (in_spec[ipart:ipart + nq],)
-        ipart += nq
-        if ipart >= len(in_spec):
-            break
-    return shape, sharding, NamedSharding(sharding.mesh, PartitionSpec(*partitions))
+    def indices():
+        return jax.lax.broadcasted_iota(np.int32, vec.shape, 0, out_sharding=sharding)
 
+    def xvec(carry, bit):
+        vec, result = carry
+        source = indices() ^ (1 << bit)
+        return (vec, result + vec.at[source].get()), None
 
-def make_matvec(num_qubits: int, axis_type: AxisType = AxisType.Auto):
-    """Return a function that applies the 1D periodic TFIM Hamiltonian to a vector."""
-    def make_apply_zz(qubit1, qubit2):
-        def apply_zz(vec):
-            qpart = (num_qubits - qubit2 - 1, 1, qubit2 - qubit1 - 1, 1, qubit1)
-            if axis_type == AxisType.Explicit:
-                shape, out_sharding, tmp_sharding = get_shape_and_shardings(vec, qpart)
-            else:
-                shape = tuple(2 ** np.array(qpart))
-                out_sharding, tmp_sharding = None, None
+    def zzvec(carry, bits):
+        vec, result = carry
+        mask = (1 << bits[0]) | (1 << bits[1])
+        signs = (jnp.bitwise_count(indices() & mask) & 1) * 2. - 1.
+        return (vec, result + vec * signs), None
 
-            vec = jnp.reshape(vec, shape, out_sharding=tmp_sharding)
-            vec *= jnp.array([[-1., 1.], [1., -1.]]).reshape((1, 2, 1, 2, 1))
-            vec = jnp.reshape(vec, (2 ** num_qubits,), out_sharding=out_sharding)
-            return vec
-
-        return apply_zz
-
-    def make_apply_x(qubit):
-        def apply_x(vec):
-            qpart = (num_qubits - qubit - 1, 1, qubit)
-            if axis_type == AxisType.Explicit:
-                shape, out_sharding, tmp_sharding = get_shape_and_shardings(vec, qpart)
-            else:
-                shape = tuple(2 ** np.array(qpart))
-                out_sharding, tmp_sharding = None, None
-
-            vec = jnp.reshape(vec, shape, out_sharding=tmp_sharding)
-            vec = jnp.flip(vec, axis=1)
-            vec = jnp.reshape(vec, (2 ** num_qubits,), out_sharding=out_sharding)
-            return vec
-
-        return apply_x
-
-    zz_fns = [make_apply_zz(q1, q2) for q1, q2 in zip(range(num_qubits - 1), range(1, num_qubits))]
-    zz_fns += [make_apply_zz(0, num_qubits - 1)]
-    x_fns = [make_apply_x(q) for q in range(num_qubits)]
-
-    @jax.jit
-    def matvec(vec, hx):
-        result = jnp.zeros_like(vec)
-        for fn in x_fns:
-            result += fn(vec)
-        result *= hx
-        for fn in zz_fns:
-            result += fn(vec)
-        return result
-
-    return matvec
+    result = jnp.zeros_like(vec)
+    result = jax.lax.scan(xvec, (vec, result), jnp.arange(num_qubits))[0][1]
+    result *= hx
+    bits = jnp.stack([jnp.arange(num_qubits), jnp.roll(jnp.arange(num_qubits), -1)], axis=1)
+    result = jax.lax.scan(zzvec, (vec, result), bits)[0][1]
+    return result
 
 
 if __name__ == "__main__":
@@ -114,19 +72,19 @@ if __name__ == "__main__":
         axis_names = tuple(string.ascii_lowercase[:nax])
         jax.set_mesh(jax.make_mesh(mesh_shape, axis_names, axis_types=(AxisType.Explicit,) * nax))
 
-    matvec_fn = make_matvec(options.num_qubits, axis_type=AxisType.Explicit)
     vspace = (2 ** options.num_qubits, np.float64)
 
     hx_args = options.hx.split(',')
     hxs = np.linspace(float(hx_args[0]), float(hx_args[1]), int(hx_args[2]))
 
-    eigvals, eigvecs = jax.lax.scan(
-        lambda _, hx: (None, ground_locg(matvec_fn, 0, args=(hx,), maxiter=1000, vspace=vspace)[:2]),
-        None,
-        hxs
-    )[1]
+    def get_ground_states(_, hx):
+        val0, vec0 = ground_locg(matvec, 0, args=(hx,), vspace=vspace, tol=1.e-14)[:2]
+        val1 = ground_locg(matvec, vspace[0] - 1, args=(hx,), orth=(vec0,), vspace=vspace,
+                           tol=1.e-12)[0]
+        return None, jnp.stack([val0, val1])
+
+    eigvals = jax.lax.scan(get_ground_states, None, hxs)[1]
 
     with h5py.File(options.out, 'w') as f:
         f.create_dataset('hxs', data=hxs)
         f.create_dataset('eigvals', data=eigvals)
-        f.create_dataset('eigvecs', data=eigvecs)
