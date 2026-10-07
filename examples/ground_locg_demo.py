@@ -17,6 +17,9 @@ def matvec(vec, hx):
     axis_names = sharding.spec[0]
 
     def reshaped_vec(partitioning):
+        if sharding.num_devices == 0:
+            return jnp.reshape(vec, tuple(2 ** nq for nq in partitioning))
+        
         reshape_spec = ()
         nq = 0
         for psize in partitioning:
@@ -24,8 +27,8 @@ def matvec(vec, hx):
             nq += psize
             if nq >= len(axis_names):
                 break
-        sharding = PartitionSpec(*reshape_spec)
-        return jnp.reshape(vec, tuple(2 ** nq for nq in partitioning), out_sharding=sharding)
+        out_sharding = PartitionSpec(*reshape_spec)
+        return jnp.reshape(vec, tuple(2 ** nq for nq in partitioning), out_sharding=out_sharding)
 
     result = jnp.zeros_like(vec)
     for qubit in range(num_qubits):
