@@ -1,10 +1,11 @@
 import os
 import string
+import time
 import numpy as np
 import h5py
 import jax
 import jax.numpy as jnp
-from jax.sharding import AxisType, Mesh
+from jax.sharding import AxisType, Mesh, PartitionSpec
 from jax.experimental.mesh_utils import create_hybrid_device_mesh
 from rqutils.ground_locg import ground_locg
 
@@ -13,26 +14,36 @@ from rqutils.ground_locg import ground_locg
 def matvec(vec, hx):
     num_qubits = np.round(np.log2(vec.shape[0])).astype(int)
     sharding = jax.typeof(vec).sharding
+    axis_names = sharding.spec[0]
 
-    def indices():
-        return jax.lax.broadcasted_iota(np.int32, vec.shape, 0, out_sharding=sharding)
-
-    def xvec(carry, bit):
-        vec, result = carry
-        source = indices() ^ (1 << bit)
-        return (vec, result + vec.at[source].get(out_sharding=sharding)), None
-
-    def zzvec(carry, bits):
-        vec, result = carry
-        mask = (1 << bits[0]) | (1 << bits[1])
-        signs = (jnp.bitwise_count(indices() & mask) & 1) * 2. - 1.
-        return (vec, result + vec * signs), None
+    def reshaped_vec(partitioning):
+        reshape_spec = ()
+        nq = 0
+        for psize in partitioning:
+            reshape_spec += (axis_names[nq:nq + psize],)
+            nq += psize
+            if nq >= len(axis_names):
+                break
+        sharding = PartitionSpec(*reshape_spec)
+        return jnp.reshape(vec, tuple(2 ** nq for nq in partitioning), out_sharding=sharding)
 
     result = jnp.zeros_like(vec)
-    result = jax.lax.scan(xvec, (vec, result), jnp.arange(num_qubits))[0][1]
+    for qubit in range(num_qubits):
+        term = reshaped_vec((num_qubits - qubit - 1, 1, qubit))
+        term = jnp.flip(term, axis=1)
+        result += jnp.reshape(term, (2 ** num_qubits,), out_sharding=sharding)
+
     result *= hx
-    bits = jnp.stack([jnp.arange(num_qubits), jnp.roll(jnp.arange(num_qubits), -1)], axis=1)
-    result = jax.lax.scan(zzvec, (vec, result), bits)[0][1]
+
+    for qubit in range(num_qubits - 1):
+        term = reshaped_vec((num_qubits - qubit - 2, 1, 1, qubit))
+        term *= jnp.array([[-1., 1.], [1., -1.]]).reshape((1, 2, 2, 1))
+        result += jnp.reshape(term, (2 ** num_qubits,), out_sharding=sharding)
+
+    term = reshaped_vec((1, num_qubits - 2, 1))
+    term *= jnp.array([[-1., 1.], [1., -1.]]).reshape((2, 1, 2))
+    result += jnp.reshape(term, (2 ** num_qubits,), out_sharding=sharding)
+
     return result
 
 
@@ -49,21 +60,31 @@ if __name__ == "__main__":
     options = parser.parse_args()
 
     jax.config.update('jax_enable_x64', True)
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
     LOG = logging.getLogger(__name__)
 
+    def loginfo(msg, *args):
+        if jax.process_index() == 0:
+            LOG.info(msg, *args)
+
     if options.gpus:
-        LOG.info('Parallelizing over %s', options.gpus)
         if options.gpus == 'mpi':
             from mpi4py import MPI
             jax.distributed.initialize(cluster_detection_method="mpi4py")
+            loginfo('Parallelizing over MPI')
         elif options.localmpi:
             from mpi4py import MPI
             comm = MPI.COMM_WORLD
             gpus = options.gpus.split(',')
             os.environ['CUDA_VISIBLE_DEVICES'] = gpus[comm.Get_rank()]
             jax.distributed.initialize('localhost:10000', comm.Get_size(), comm.Get_rank())
+            loginfo('Local multi-process parallelization using GPUs %s', options.gpus)
         else:
+            loginfo('Parallelizing over GPUs %s', options.gpus)
             os.environ['CUDA_VISIBLE_DEVICES'] = options.gpus
 
         ndev = jax.device_count()
@@ -82,13 +103,12 @@ if __name__ == "__main__":
 
             inner_mesh_shape = (1,) * (nax - nax_per_slice) + (2,) * nax_per_slice
             outer_mesh_shape = (2,) * (nax - nax_per_slice) + (1,) * nax_per_slice
-            LOG.info('Inner mesh shape: %s, outer mesh shape: %s',
-                     inner_mesh_shape, outer_mesh_shape)
+            loginfo('Inner mesh shape: %s, outer mesh shape: %s',
+                    inner_mesh_shape, outer_mesh_shape)
             mesh = Mesh(create_hybrid_device_mesh(inner_mesh_shape, outer_mesh_shape),
                         axis_names=axis_names, axis_types=(AxisType.Explicit,) * nax)
         else:
             mesh = jax.make_mesh((2,) * nax, axis_names, axis_types=(AxisType.Explicit,) * nax)
-
         jax.set_mesh(mesh)
 
     vspace = (2 ** options.num_qubits, np.float64)
@@ -96,7 +116,14 @@ if __name__ == "__main__":
     hx_args = options.hx.split(',')
     hxs = np.linspace(float(hx_args[0]), float(hx_args[1]), int(hx_args[2]))
 
-    def get_ground_states(_, hx):
+    if jax.process_index() == 0:
+        with h5py.File(options.out, 'w') as out:
+            out.create_dataset('hxs', data=hxs)
+            out.create_dataset('eigvals', shape=hxs.shape + (options.max_level + 1,),
+                               dtype=np.float64)
+
+    @jax.jit
+    def get_ground_states(hx):
         vals = []
         orth = ()
         init = 0
@@ -109,11 +136,13 @@ if __name__ == "__main__":
             init = vspace[0] - 1
             tol *= 10.
         vals.append(ground_locg(matvec, init, args=(hx,), orth=orth, vspace=vspace, tol=tol)[0])
-        return None, jnp.stack(vals)
+        return jnp.stack(vals)
 
-    eigvals = jax.lax.scan(get_ground_states, None, hxs)[1]
-
-    if jax.process_index() == 0:
-        with h5py.File(options.out, 'w') as f:
-            f.create_dataset('hxs', data=hxs)
-            f.create_dataset('eigvals', data=eigvals)
+    for ihx, hx in enumerate(hxs):
+        loginfo('Starting hx=%.2f', hx)
+        start = time.time()
+        eigvals = np.array(get_ground_states(hx))
+        loginfo('Done in %.2f seconds. eigvals=%s', time.time() - start, eigvals)
+        if jax.process_index() == 0:
+            with h5py.File(options.out, 'a') as out:
+                out['eigvals'][ihx] = eigvals
