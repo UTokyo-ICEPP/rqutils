@@ -282,36 +282,49 @@ def _ground_locg_callable(
         ax = matvec(xcurr, *args)
         if orth:
             ax = _project_out(orth, ax, normalize=False)
-        rho = jnp.sum(xcurr.conjugate() * ax).real
-        rnext = ax - rho * xnext
+        theta = jnp.sum(xcurr.conjugate() * ax).real
+        rnext = ax - theta * xnext
+        state = (theta, xnext, rnext)
         if debug:
-            diag = diagnostics(xnext, jnp.zeros_like(xnext), rnext, rho)
-            return xnext, rnext, diag
-        return xnext, rnext
+            diag = diagnostics(xnext, jnp.zeros_like(xnext), rnext, theta)
+            return state, diag
+        return state
 
-    def body_iter1(xcurr, rcurr):
+    def body_iter1(state):
+        xcurr, rcurr = state[1:]
         norm_rcurr = jnp.linalg.norm(rcurr)
-        tmp_p = rcurr / jnp.where(norm_rcurr == 0., 1., norm_rcurr)
-        theta, kappa = rayleigh_ritz(xcurr, tmp_p)
-        tmp_t = tmp_p * kappa[0] - xcurr * kappa[1]
-        tmp_u = xcurr * kappa[0] + tmp_p * kappa[1]
-        xnext = tmp_u / jnp.linalg.norm(tmp_u)
-        ynext = tmp_t / jnp.linalg.norm(tmp_t)
-        if orth:
-            # xnext and ynext is analytically already orthogonal to orth
-            xnext = _project_out(orth, xnext)
-        rnext = matvec(xnext, *args) - theta * xnext
-        if orth:
-            rnext = _project_out(orth, rnext, normalize=False)
+
+        def r_nonnull():
+            tmp_p = rcurr / norm_rcurr
+            theta, kappa = rayleigh_ritz(xcurr, tmp_p)
+            tmp_t = tmp_p * kappa[0] - xcurr * kappa[1]
+            tmp_u = xcurr * kappa[0] + tmp_p * kappa[1]
+            xnext = tmp_u / jnp.linalg.norm(tmp_u)
+            ynext = tmp_t / jnp.linalg.norm(tmp_t)
+            if orth:
+                # xnext and ynext is analytically already orthogonal to orth
+                xnext = _project_out(orth, xnext)
+            rnext = matvec(xnext, *args) - theta * xnext
+            if orth:
+                rnext = _project_out(orth, rnext, normalize=False)
+            return theta, xnext, ynext, rnext, kappa
+
+        theta, xnext, ynext, rnext, kappa = jax.lax.cond(
+            norm_rcurr == 0.,
+            lambda: (state[0], xcurr, jnp.zeros_like(xcurr), rcurr, jnp.zeros(2)),
+            r_nonnull
+        )
+
+        state = (theta, xnext, ynext, rnext)
         if debug:
             diag = diagnostics(xnext, ynext, rnext, theta, jnp.insert(kappa, 1, 0.))
-            return xnext, ynext, rnext, diag
-        return xnext, ynext, rnext
+            return state, diag
+        return state
 
     def body(state):
-        xcurr, ycurr, rcurr = state[-3:]
+        xcurr, ycurr, rcurr = state[1:4]
         if log_level <= logging.DEBUG:
-            jax.debug.print('LOCG iteration {}', state[0])
+            jax.debug.print('LOCG iteration {}', state[4])
 
         # Residual basis selection.
         # R is supposed to be already orthogonal to X, but we find that it's necessary to project
@@ -364,7 +377,7 @@ def _ground_locg_callable(
         if log_level <= logging.DEBUG:
             jax.debug.print('Residual {}, reltol {}, converged: {}', norm_rnext, reltol, converged)
 
-        state = (state[0] + 1, converged, theta, xnext, ynext, rnext)
+        state = (theta, xnext, ynext, rnext, state[4] + 1, converged, )
         if debug:
             return state, diagnostics(xnext, ynext, rnext, theta, kappa, reltol, converged)
         return state
@@ -376,15 +389,19 @@ def _ground_locg_callable(
 
     vs_iter0 = body_iter0(xinit)
     if debug:
-        diag0 = vs_iter0[-1]
+        state, diag0 = vs_iter0
         diag0 = jax.tree.map(lambda a: jnp.expand_dims(a, 0), diag0)
+    else:
+        state = vs_iter0        
 
-    vs_iter1 = body_iter1(vs_iter0[0], vs_iter0[1])
+    vs_iter1 = body_iter1(state)
     if debug:
-        diag1 = vs_iter1[-1]
+        state, diag1 = vs_iter0
         diag1 = jax.tree.map(lambda a: jnp.expand_dims(a, 0), diag1)
+    else:
+        state = vs_iter1
 
-    state = (0, False, 0.) + vs_iter1[:3]
+    state += (jnp.array(0), jnp.array(False))
     if debug:
         state, diagnostics = jax.lax.scan(
             lambda s, _: body(s), state, length=maxiter
@@ -393,14 +410,14 @@ def _ground_locg_callable(
                                    diag0, diag1, diagnostics)
     else:
         state = jax.lax.while_loop(
-            lambda s: jnp.logical_and(s[0] < maxiter, ~s[1]),
+            lambda s: jnp.logical_and(s[4] < maxiter, ~s[5]),
             body,
             state
         )
 
-    niter = state[0]
-    eigval = state[2]
-    xfinal = state[3]
+    niter = state[4]
+    eigval = state[0]
+    xfinal = state[1]
     if debug:
         return eigval, xfinal, niter, diagnostics
     return eigval, xfinal, niter
