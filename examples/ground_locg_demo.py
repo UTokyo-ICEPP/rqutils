@@ -1,3 +1,5 @@
+"""Demonstration of ground_locg using 1D TFIM."""
+
 import os
 import string
 import time
@@ -11,7 +13,15 @@ from rqutils.ground_locg import ground_locg
 
 
 @jax.jit
-def matvec(vec, hx):
+def matvec(vec: jax.Array, hx: jax.Array) -> jax.Array:
+    """Linear operator that implements the Ising model Hamiltonian.
+    
+    Args:
+        vec: State vector.
+        hx: Transverse field value.
+    Returns:
+        Result of applying the Hamiltonian onto vec.
+    """
     num_qubits = np.round(np.log2(vec.shape[0])).astype(int)
     sharding = jax.typeof(vec).sharding
     axis_names = sharding.spec[0]
@@ -116,8 +126,11 @@ if __name__ == "__main__":
 
     vspace = (2 ** options.num_qubits, np.float64)
 
-    hx_args = options.hx.split(',')
-    hxs = np.linspace(float(hx_args[0]), float(hx_args[1]), int(hx_args[2]))
+    if ',' in options.hx:
+        hx_args = options.hx.split(',')
+        hxs = np.linspace(float(hx_args[0]), float(hx_args[1]), int(hx_args[2]))
+    else:
+        hxs = np.array([float(options.hx)])
 
     if jax.process_index() == 0:
         with h5py.File(options.out, 'w') as out:
