@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rqutils"
-version = "0.2.0"
+version = "0.2.1"
 authors = [
   { name="Yutaro Iiyama", email="iiyama@icepp.s.u-tokyo.ac.jp" },
 ]
