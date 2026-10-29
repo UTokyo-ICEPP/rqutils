@@ -308,34 +308,32 @@ def run_sqd(
     log_level: int = logging.INFO
 ) -> tuple[float] | tuple[float, jax.Array, jax.Array, int]:
     """JIT-compiled part of the SQD function."""
-    sharding = None
-    if not (mesh := get_abstract_mesh()).empty:
-        sharding = PartitionSpec(mesh.axis_names)
+    pspec = get_pspec()
 
     if log_level <= logging.DEBUG:
-        jax.debug.print('Uniquifying states (size {})', states_size)
+        jax.debug.print(ordered=True)('Uniquifying states (size {})', states_size)
 
     states_u = uniquify_states(states_p, states_size)
 
     if cache_level[0] == 1:
         if log_level <= logging.DEBUG:
-            jax.debug.print('Precomputing xsources')
+            jax.debug.print(ordered=True)('Precomputing xsources')
 
         xsources = jax.lax.scan(
             lambda _, x: (None, get_xsource(x, states_u)),
             None,
             hamiltonian.x
         )[1]
-        if sharding:
+        if pspec:
             # We will not be performing sorts on states any more - shard the array
             if log_level <= logging.DEBUG:
-                jax.debug.print('Sharding states array')
+                jax.debug.print(ordered=True)('Sharding states array')
 
-            states_u = jax.reshard(states_u, sharding)
+            states_u = jax.reshard(states_u, pspec)
 
     if cache_level[1] == 1:
         if log_level <= logging.DEBUG:
-            jax.debug.print('Precomputing sign bits of diagonals')
+            jax.debug.print(ordered=True)('Precomputing sign bits of diagonals')
 
         diag_signs = jax.lax.scan(
             lambda _, z: (None, get_diag_signs(z, states_u)),
@@ -344,7 +342,7 @@ def run_sqd(
         )[1]
     elif cache_level[1] == 2:
         if log_level <= logging.DEBUG:
-            jax.debug.print('Precomputing diagonals')
+            jax.debug.print(ordered=True)('Precomputing diagonals')
 
         diagonals = jax.lax.scan(
             lambda _, v: (None, get_diagonal(v[0], v[1], states_u)),
@@ -381,17 +379,17 @@ def run_sqd(
         diagonal = jnp.where(states_u[:, 0] == 255, jnp.max(diagonal), diagonal)
         imin = jnp.argmin(diagonal)
         return (
-            jax.lax.broadcasted_iota(imin.dtype, (states_size,), 0, out_sharding=sharding) == imin
+            jax.lax.broadcasted_iota(imin.dtype, (states_size,), 0, out_sharding=pspec) == imin
         ).astype(hamiltonian.c.dtype)
 
     def vinit_nodiag():
         # TODO: Come up with a way to find a good vinit when there is no diagonal term
         return (
-            jax.lax.broadcasted_iota(np.int32, (states_size,), 0, out_sharding=sharding) == 0
+            jax.lax.broadcasted_iota(np.int32, (states_size,), 0, out_sharding=pspec) == 0
         ).astype(hamiltonian.c.dtype)
 
     if log_level <= logging.DEBUG:
-        jax.debug.print('Generating vinit')
+        jax.debug.print(ordered=True)('Generating vinit')
 
     vinit = jax.lax.cond(
         jnp.all(hamiltonian.x[0] == 0),
@@ -400,12 +398,12 @@ def run_sqd(
     )
 
     if log_level <= logging.DEBUG:
-        jax.debug.print(f'Starting minimization with cache_level {cache_level}')
+        jax.debug.print(ordered=True)('Starting minimization with cache_level {}', cache_level)
 
     eigval, eigvec, _ = ground_locg(matvec, vinit, args=args, log_level=log_level)
     result = (eigval,)
     if return_eigvec:
-        if sharding:
+        if pspec:
             eigvec = jax.reshard(eigvec, PartitionSpec(None))
             states_u = jax.reshard(states_u, PartitionSpec(None))
         subspace_dim = jnp.searchsorted(states_u[:, 0] >> 7, 1)
@@ -525,11 +523,13 @@ def get_diag_signs(
     states: StateList
 ) -> jax.Array:
     """Return the packed sign bits."""
+    pspec = get_pspec()
+
     def get_signs(carry, zsignature):
         out, ibyte, ibit = carry
         sign_bits = jnp.sum(jnp.bitwise_count(states & zsignature), axis=1, dtype=np.uint8) & 1
         # bits and bytes are counted from the left
-        out = out.at[:, ibyte].add(sign_bits << (7 - ibit), out_sharding=jax.typeof(out).sharding)
+        out = out.at[:, ibyte].add(sign_bits << (7 - ibit), out_sharding=pspec)
         ibyte, ibit = jax.lax.cond(
             ibit == 7,
             lambda: (ibyte + 1, 0),
@@ -538,8 +538,7 @@ def get_diag_signs(
         return (out, ibyte, ibit), None
 
     num_bytes = np.ceil(zsignatures.shape[0] / 8).astype(int)
-    init = jnp.zeros((states.shape[0], num_bytes), dtype=np.uint8,
-                     out_sharding=jax.typeof(states).sharding)
+    init = jnp.zeros((states.shape[0], num_bytes), dtype=np.uint8, out_sharding=pspec)
     return jax.lax.scan(get_signs, (init, 0, 0), zsignatures)[0][0]
 
 
@@ -562,8 +561,7 @@ def compute_diagonal(
         signs = 1. - 2. * signed
         return diagonal + coeff * signs, iterm + 1
 
-    init = jnp.zeros(diag_signs.shape[0], dtype=coeffs.dtype,
-                     out_sharding=jax.typeof(diag_signs).sharding)
+    init = jnp.zeros(diag_signs.shape[0], dtype=coeffs.dtype, out_sharding=get_pspec())
     return jax.lax.while_loop(cond_fn, add_diag, (init, 0))[0]
 
 
@@ -587,7 +585,7 @@ def get_diagonal(
         signs = 1. - 2. * signed
         return diagonal + coeff * signs, iterm + 1
 
-    init = jnp.zeros(states.shape[0], dtype=coeffs.dtype, out_sharding=jax.typeof(states).sharding)
+    init = jnp.zeros(states.shape[0], dtype=coeffs.dtype, out_sharding=get_pspec())
     return jax.lax.while_loop(cond_fn, add_diag, (init, 0))[0]
 
 
@@ -599,7 +597,7 @@ def apply_xgrp(
 ) -> jax.Array:
     """Gather vector entries from the source indices and multiply them with diagonals."""
     xvec = vec.at[..., xsource].get(mode='fill', fill_value=0., wrap_negative_indices=False,
-                                    out_sharding=jax.typeof(vec).sharding)
+                                    out_sharding=get_pspec())
     return xvec * diagonal
 
 
@@ -698,3 +696,9 @@ def apply_h_xz_cached(
         jnp.zeros_like(vec),
         (xsources, diagonals)
     )[0]
+
+
+def get_pspec():
+    if (mesh := get_abstract_mesh()).empty:
+        return None
+    return PartitionSpec(mesh.axis_names)
