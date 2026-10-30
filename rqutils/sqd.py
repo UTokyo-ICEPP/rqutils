@@ -157,7 +157,8 @@ from collections.abc import Sequence
 import logging
 import time
 from numbers import Number
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Optional
 import numpy as np
 from numpy.typing import NDArray
 from scipy.sparse import csr_array, coo_array
@@ -179,13 +180,26 @@ type Vector = np.ndarray[tuple[int], np.dtype[np.inexact]]
 type StateList = np.ndarray[tuple[int, int], np.dtype[np.uint8]]
 type PackedStateList = np.ndarray[tuple[int, int], np.dtype[np.uint8]]
 
+@dataclass(frozen=True)
+class SQDOptions:
+    return_eigvec: bool = True
+    """Whether to return the eigenvector (coefficients and unique state bitstrings)."""
+    cache_strategy: tuple[int, int] = (1, 0)
+    """Switches for caching the results of source indices and sign bits / diagonals.
+       See the module documentation for the detailed discussion of the resource tradeoff involved."""
+    gather_shard_bundle: int = 1
+    """How many shards to bundle in the staged cache. Only used with cache_strategy (2, *)."""
+    locg_maxiter: int = 1000
+    """LOCG maximum iterations."""
+    locg_tol: float | None = None
+    """LOCG convergence tolerance."""
+
 
 def sqd(
     hamiltonian: HamiltonianInput,
     states: StateList,
     states_size: Optional[int] = None,
-    return_eigvec: bool = True,
-    cache_level: tuple[int, int] = (1, 0)
+    options: Optional[SQDOptions | dict[str, Any]] = None
 ) -> float | tuple[float, Vector, StateList]:
     r"""Perform a sample-based quantum diagonalization of the Hamiltonian.
 
@@ -213,14 +227,15 @@ def sqd(
             (subspace_dim, num_qubits).
         states_size: Fix the size of the states array used in computation to the specified value so
             that compilation is not triggered at each call with slightly different array sizes.
-        return_eigvec: Whether to return the eigenvector (coefficients and unique state bitstrings).
-        cache_level: Switches for caching the results of source indices and sign bits / diagonals.
-            See the module documentation for the detailed discussion of the resource tradeoff involved.
+        options: Execution options.
 
     Returns:
         Calculated ground state energy, or a tuple of energy, ground state vector, and sorted
         uniquified states (if return_eigvec=True).
     """
+    if isinstance(options, dict):
+        options = SQDOptions(**options)
+
     if states_size is None:
         states_size = states.shape[0]
     if states_size < states.shape[0]:
@@ -240,10 +255,10 @@ def sqd(
 
     LOG.debug('Starting SQD with array size %s', states_size)
     start = time.time()
-    result = run_sqd(hamiltonian, states_p, states_size, return_eigvec, cache_level)
+    result = run_sqd(hamiltonian, states_p, states_size, options)
     LOG.info('Found ground eigenpair in %f seconds.', time.time() - start)
     eigval = float(result[0])
-    if return_eigvec:
+    if options.return_eigvec:
         eigvec, states_u, subspace_dim = result[1:]
         basis_states = np.unpackbits(states_u[:subspace_dim], axis=-1)[:, 1:1 + states.shape[1]]
         return (eigval, np.array(eigvec[:subspace_dim]), basis_states)
@@ -298,24 +313,32 @@ def hproj(
     return csr_array(coo_array((data, (rows, cols))))
 
 
-@jax.jit(static_argnames=['states_size', 'return_eigvec', 'cache_level', 'log_level'])
+@jax.jit(
+    static_argnames=[
+        'states_size',
+        'options',
+        'log_level'
+    ]
+)
 def run_sqd(
     hamiltonian: PauliSumXZ,
     states_p: PackedStateList,
     states_size: int,
-    return_eigvec: bool,
-    cache_level: tuple[int, int] = (1, 0),
+    options: SQDOptions | None = None,
     log_level: int = logging.INFO
 ) -> tuple[float] | tuple[float, jax.Array, jax.Array, int]:
     """JIT-compiled part of the SQD function."""
     pspec = get_pspec()
+
+    if options is None:
+        options = SQDOptions()
 
     if log_level <= logging.DEBUG:
         jax.debug.print(ordered=True)('Uniquifying states (size {})', states_size)
 
     states_u = uniquify_states(states_p, states_size)
 
-    if cache_level[0] == 1:
+    if options.cache_strategy[0] > 0:
         if log_level <= logging.DEBUG:
             jax.debug.print(ordered=True)('Precomputing xsources')
 
@@ -331,7 +354,13 @@ def run_sqd(
 
             states_u = jax.reshard(states_u, pspec)
 
-    if cache_level[1] == 1:
+        if options.cache_strategy[0] == 2:
+            if (mesh := get_abstract_mesh()).empty:
+                raise ValueError('cache_strategy (2, *) is only available for sharded input')
+            if mesh.size % options.gather_shard_bundle != 0:
+                raise ValueError('gather_shard_bundle must divide the mesh size evenly')
+
+    if options.cache_strategy[1] == 1:
         if log_level <= logging.DEBUG:
             jax.debug.print(ordered=True)('Precomputing sign bits of diagonals')
 
@@ -340,7 +369,7 @@ def run_sqd(
             None,
             hamiltonian.z
         )[1]
-    elif cache_level[1] == 2:
+    elif options.cache_strategy[1] == 2:
         if log_level <= logging.DEBUG:
             jax.debug.print(ordered=True)('Precomputing diagonals')
 
@@ -350,7 +379,7 @@ def run_sqd(
             (hamiltonian.z, hamiltonian.c)
         )[1]
 
-    match cache_level:
+    match options.cache_strategy:
         case (0, 0):
             matvec = apply_h
             args = (hamiltonian.x, hamiltonian.z, hamiltonian.c, states_u)
@@ -369,9 +398,12 @@ def run_sqd(
         case (1, 2):
             matvec = apply_h_xz_cached
             args = (xsources, diagonals)
+        case (2, 0):
+            matvec = make_apply_h_x_gathered(options.gather_shard_bundle)
+            args = (xsources, hamiltonian.z, hamiltonian.c, states_u)
 
     def vinit_from_min_diag():
-        if cache_level[1] == 2:
+        if options.cache_strategy[1] == 2:
             diagonal = diagonals[0]
         else:
             diagonal = get_diagonal(hamiltonian.z[0], hamiltonian.c[0], states_u).real
@@ -398,11 +430,13 @@ def run_sqd(
     )
 
     if log_level <= logging.DEBUG:
-        jax.debug.print(ordered=True)('Starting minimization with cache_level {}', cache_level)
+        jax.debug.print(ordered=True)('Starting minimization with cache_strategy {}',
+                                      options.cache_strategy)
 
-    eigval, eigvec, _ = ground_locg(matvec, vinit, args=args, log_level=log_level)
+    eigval, eigvec, _ = ground_locg(matvec, vinit, args=args, maxiter=options.locg_maxiter,
+                                    tol=options.locg_tol, log_level=log_level)
     result = (eigval,)
-    if return_eigvec:
+    if options.return_eigvec:
         if pspec:
             eigvec = jax.reshard(eigvec, PartitionSpec(None))
             states_u = jax.reshard(states_u, PartitionSpec(None))
@@ -611,9 +645,9 @@ def apply_h(
 ) -> jax.Array:
     """Return Hv using X and Z signatures and Pauli coefficients."""
     def fn(out, val):
-        xpat, zpats, cs = val
-        xsource = get_xsource(xpat, states)
-        diagonal = get_diagonal(zpats, cs, states)
+        xsig, zsigs, cs = val
+        xsource = get_xsource(xsig, states)
+        diagonal = get_diagonal(zsigs, cs, states)
         return out + apply_xgrp(xsource, diagonal, vec), None
 
     return jax.lax.scan(fn, jnp.zeros_like(vec), (xsignatures, zsignatures, coeffs))[0]
@@ -628,8 +662,8 @@ def apply_h_s_cached(
     coeffs: NDArray[np.inexact]
 ) -> jax.Array:
     def fn(out, val):
-        xpat, signs, cs = val
-        xsource = get_xsource(xpat, states)
+        xsig, signs, cs = val
+        xsource = get_xsource(xsig, states)
         diagonal = compute_diagonal(signs, cs)
         return out + apply_xgrp(xsource, diagonal, vec), None
 
@@ -661,8 +695,8 @@ def apply_h_x_cached(
 ) -> jax.Array:
     """Return Hv using precomputed xsources and diagonals data."""
     def fn(out, val):
-        xsource, zpats, cs = val
-        diagonal = get_diagonal(zpats, cs, states)
+        xsource, zsigs, cs = val
+        diagonal = get_diagonal(zsigs, cs, states)
         return out + apply_xgrp(xsource, diagonal, vec), None
 
     return jax.lax.scan(fn, jnp.zeros_like(vec), (xsources, zsignatures, coeffs))[0]
@@ -696,6 +730,45 @@ def apply_h_xz_cached(
         jnp.zeros_like(vec),
         (xsources, diagonals)
     )[0]
+
+
+def make_apply_h_x_gathered(shard_bundle: int):
+    mesh_size = get_abstract_mesh().size
+    num_bundles = mesh_size // shard_bundle
+
+    def apply_h_x_gathered(
+        vec: NDArray[np.inexact],
+        xsources: NDArray[np.int32],
+        zsignatures: NDArray[np.uint8],
+        coeffs: NDArray[np.inexact],
+        states: StateList
+    ) -> jax.Array:
+        """Return Hv using precomputed xsources and diagonals data."""
+        shard_size = vec.shape[-1] // mesh_size
+        bundle_size = shard_size * shard_bundle
+
+        def iter_bundle(ibundle, out):
+            # Stage the bundle on the local device
+            start = bundle_size * ibundle
+            bundle = vec.at[..., jax.ds(start, bundle_size)].get(out_sharding=PartitionSpec(None))
+            # Perform gather and *diagonal
+            return jax.lax.scan(iter_xsig, (out, bundle),
+                                (xsources - start, zsignatures, coeffs))[0][0]
+
+        def iter_xsig(carry, val):
+            out, bundle = carry
+            xsource, zsigs, cs = val
+            diagonal = get_diagonal(zsigs, cs, states)
+            return (out + apply_xgrp(xsource, diagonal, bundle), bundle), None
+
+        return jax.lax.fori_loop(
+            0,
+            num_bundles,
+            iter_bundle,
+            jnp.zeros_like(vec)
+        )
+
+    return apply_h_x_gathered
 
 
 def get_pspec():
