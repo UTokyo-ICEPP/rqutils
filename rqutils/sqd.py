@@ -376,7 +376,7 @@ def run_sqd(
         else:
             diagonal = get_diagonal(hamiltonian.z[0], hamiltonian.c[0], states_u).real
         # Set the fill-in components to the maximum value so that argmin only sees the valid entries
-        diagonal = jnp.where(states_u[:, 0] == 255, jnp.max(diagonal), diagonal)
+        diagonal = jnp.where(states_u[:, 0] == 255, np.inf, diagonal)
         imin = jnp.argmin(diagonal)
         return (
             jax.lax.broadcasted_iota(imin.dtype, (states_size,), 0, out_sharding=pspec) == imin
