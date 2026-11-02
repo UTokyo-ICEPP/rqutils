@@ -744,7 +744,7 @@ def apply_h_xz_cached(
 
 
 def make_x_cached_matvec(matvec: Callable, in_specs: tuple[P, ...], bundle: int = 1):
-    if (mesh := get_abstract_mesh()).empty:
+    if (mesh := get_abstract_mesh()).size <= 1:
         @jax.jit
         def _matvec(vec, *_args):
             _args += (jnp.zeros_like(vec), 0)
