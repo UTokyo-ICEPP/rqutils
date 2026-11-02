@@ -187,8 +187,9 @@ class SQDOptions:
     cache_strategy: tuple[int, int] = (1, 0)
     """Switches for caching the results of source indices and sign bits / diagonals.
        See the module documentation for the detailed discussion of the resource tradeoff involved."""
-    gather_shard_bundle: int = 1
-    """How many shards to bundle in the staged cache. Only used with cache_strategy (2, *)."""
+    shard_bundle: int = 1
+    """Number of input vector shards to bundle together in X-cached apply_h.
+       Ignored unless cache_strategy=(1, *)."""
     locg_maxiter: int = 1000
     """LOCG maximum iterations."""
     locg_tol: float | None = None
@@ -400,7 +401,7 @@ def run_sqd(
             in_specs = (P(None, axis_names), P(None, axis_names))
 
     if options.cache_strategy[0] == 1:
-        matvec = make_x_cached_matvec(matvec, in_specs)
+        matvec = make_x_cached_matvec(matvec, in_specs, bundle=options.shard_bundle)
 
     def vinit_from_min_diag():
         if options.cache_strategy[1] == 2:
@@ -634,8 +635,8 @@ def apply_xgrp(
     vec: NDArray[np.inexact]
 ) -> jax.Array:
     """Gather vector entries from the source indices and multiply them with diagonals."""
-    xvec = vec.at[..., xsource].get(mode='fill', fill_value=0., wrap_negative_indices=False,
-                                    out_sharding=jax.typeof(vec).sharding)
+    xvec = vec.at[xsource].get(mode='fill', fill_value=0., wrap_negative_indices=False,
+                               out_sharding=jax.typeof(xsource).sharding)
     return xvec * diagonal
 
 
@@ -742,7 +743,7 @@ def apply_h_xz_cached(
     )[0]
 
 
-def make_x_cached_matvec(matvec: Callable, in_specs: tuple[P, ...]):
+def make_x_cached_matvec(matvec: Callable, in_specs: tuple[P, ...], bundle: int = 1):
     if (mesh := get_abstract_mesh()).empty:
         @jax.jit
         def _matvec(vec, *_args):
@@ -750,17 +751,30 @@ def make_x_cached_matvec(matvec: Callable, in_specs: tuple[P, ...]):
             return matvec(vec, *_args)
 
     else:
+        if bundle < 0 or (bundle > 0 and mesh.size % bundle != 0):
+            raise ValueError('bundle must be positive and divide the mesh size evenly')
+
         @jax.jit
         @jax.shard_map(in_specs=(P(mesh.axis_names),) + in_specs, out_specs=P(mesh.axis_names))
         def _matvec(vec_shard, *_args):
-            my_idx = jax.lax.axis_index(mesh.axis_names)
+            if bundle == 0:
+                in_vec = jax.lax.all_gather(vec_shard, mesh.axis_names, tiled=True)
+                _args += (jnp.zeros_like(vec_shard), 0)
+                return matvec(in_vec, *_args)
 
-            def from_block(shard_idx, out_shard):
-                in_vec = jax.lax.psum(vec_shard * (shard_idx == my_idx), mesh.axis_names)
-                offset = vec_shard.shape[0] * shard_idx
+            my_idx = jax.lax.axis_index(mesh.axis_names)
+            shard_size = vec_shard.shape[0]
+
+            def from_block(block_idx, out_shard):
+                def make_in_vec(ishard):
+                    shard_idx = bundle * block_idx + ishard
+                    return jax.lax.psum(vec_shard * (shard_idx == my_idx), mesh.axis_names)
+
+                in_vec = jax.lax.map(make_in_vec, jnp.arange(bundle)).reshape(-1)
+                offset = shard_size * bundle * block_idx
                 args_block = _args + (out_shard, offset)
                 return matvec(in_vec, *args_block)
 
-            return jax.lax.fori_loop(0, mesh.size, from_block, jnp.zeros_like(vec_shard))
+            return jax.lax.fori_loop(0, mesh.size // bundle, from_block, jnp.zeros_like(vec_shard))
 
     return _matvec
