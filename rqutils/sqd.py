@@ -328,7 +328,9 @@ def run_sqd(
     log_level: int = logging.INFO
 ) -> tuple[float] | tuple[float, jax.Array, jax.Array, int]:
     """JIT-compiled part of the SQD function."""
-    mesh = get_abstract_mesh()
+    if (mesh := get_abstract_mesh()).empty:
+        raise RuntimeError('Context mesh is required. Use jax.set_mesh() to set a mesh.')
+    axis_names = mesh.axis_names
 
     if options is None:
         options = SQDOptions()
@@ -337,6 +339,13 @@ def run_sqd(
         jax.debug.print(ordered=True)('Uniquifying states (size {})', states_size)
 
     states_u = uniquify_states(states_p, states_size)
+
+    arg_parts = {
+        'x': (hamiltonian.x, P(None, None)),
+        'z': (hamiltonian.z, P(None, None, None)),
+        'c': (hamiltonian.c, P(None, None)),
+        'states_u': (states_u, P(None, None))
+    }
 
     if options.cache_strategy[0] > 0:
         if log_level <= logging.DEBUG:
@@ -347,18 +356,12 @@ def run_sqd(
             None,
             hamiltonian.x
         )[1]
-        if not mesh.empty:
+        if mesh.size > 1:
             # We will not be performing sorts on states any more - shard the array
             if log_level <= logging.DEBUG:
                 jax.debug.print(ordered=True)('Sharding states array')
-
-            states_u = jax.reshard(states_u, P(mesh.axis_names, None))
-
-        if options.cache_strategy[0] == 2:
-            if (mesh := get_abstract_mesh()).empty:
-                raise ValueError('cache_strategy (2, *) is only available for sharded input')
-            if mesh.size % options.gather_shard_bundle != 0:
-                raise ValueError('gather_shard_bundle must divide the mesh size evenly')
+            states_u = jax.reshard(states_u, P(axis_names, None))
+            arg_parts['states_u'] = (states_u, P(axis_names, None))
 
     if options.cache_strategy[1] == 1:
         if log_level <= logging.DEBUG:
@@ -369,6 +372,8 @@ def run_sqd(
             None,
             hamiltonian.z
         )[1]
+        arg_parts['diag_signs'] = (diag_signs, P(None, axis_names, None))
+
     elif options.cache_strategy[1] == 2:
         if log_level <= logging.DEBUG:
             jax.debug.print(ordered=True)('Precomputing diagonals')
@@ -378,6 +383,7 @@ def run_sqd(
             None,
             (hamiltonian.z, hamiltonian.c)
         )[1]
+        arg_parts['diagonals'] = (diagonals, P(None, axis_names))
 
     match options.cache_strategy:
         case (0, 0):
@@ -399,13 +405,16 @@ def run_sqd(
             matvec = apply_h_xz_cached
             args = (xsources, diagonals)
         case (2, 0):
-            matvec = make_apply_h_x_cached_by_shard()
+            in_specs=(
+                P(None, axis_names),
+                P(None, None, None),
+                P(None, None),
+                P(axis_names, None)
+            )
+            matvec = apply_h_x_cached_by_shard
             args = (xsources, hamiltonian.z, hamiltonian.c, states_u)
-
-    if mesh.empty:
-        out_sharding = NamedSharding(mesh, P())
-    else:
-        out_sharding = NamedSharding(mesh, P(mesh.axis_names))
+            in_specs = (P(axis_names),) + in_specs
+            matvec = jax.jit(jax.shard_map(matvec, in_specs=in_specs, out_specs=P(axis_names)))
 
     def vinit_from_min_diag():
         if options.cache_strategy[1] == 2:
@@ -438,7 +447,7 @@ def run_sqd(
                                     log_level=log_level)
     result = (eigval,)
     if options.return_eigvec:
-        if not mesh.empty:
+        if mesh.size > 1:
             eigvec = jax.reshard(eigvec, P(None))
             states_u = jax.reshard(states_u, P(None, None))
         subspace_dim = jnp.searchsorted(states_u[:, 0] >> 7, 1)
@@ -739,54 +748,38 @@ def apply_h_xz_cached(
     )[0]
 
 
-def make_apply_h_x_cached_by_shard():
+def apply_h_x_cached_by_shard(
+    vec_block: NDArray[np.inexact],
+    xsource_blocks: NDArray[np.int32],
+    zsignatures: NDArray[np.uint8],
+    coeffs: NDArray[np.inexact],
+    states_block: StateList
+) -> NDArray[np.inexact]:
     mesh = get_abstract_mesh()
-    axis_names = mesh.axis_names
+    my_idx = jax.lax.axis_index(mesh.axis_names)
 
-    @jax.jit
-    @jax.shard_map(
-        in_specs=(
-            P(axis_names),
-            P(None, axis_names),
-            P(None, None, None),
-            P(None, None),
-            P(axis_names, None)
-        ),
-        out_specs=P(axis_names)
+    def apply_h_from_shard(shard_idx, out_block):
+        in_vec = jax.lax.psum(vec_block * (shard_idx == my_idx), mesh.axis_names)
+        offset = vec_block.shape[0] * shard_idx
+
+        def fn(out, val):
+            xsource_block, zsigs, cs = val
+            diagonal_block = get_diagonal(zsigs, cs, states_block)
+            return out + apply_xgrp(xsource_block - offset, diagonal_block, in_vec), None
+    
+        out_block = jax.lax.scan(
+            fn,
+            out_block,
+            (xsource_blocks, zsignatures, coeffs)
+        )[0]
+        return out_block
+
+    return jax.lax.fori_loop(
+        0,
+        mesh.size,
+        apply_h_from_shard,
+        jnp.zeros_like(vec_block)
     )
-    def apply_h_x_cached_by_shard(
-        vec_block: NDArray[np.inexact],
-        xsource_blocks: NDArray[np.int32],
-        zsignatures: NDArray[np.uint8],
-        coeffs: NDArray[np.inexact],
-        states_block: StateList
-    ) -> NDArray[np.inexact]:
-        my_idx = jax.lax.axis_index(axis_names)
-
-        def apply_h_from_shard(shard_idx, out_block):
-            in_vec = jax.lax.psum(vec_block * (shard_idx == my_idx), axis_names)
-            offset = vec_block.shape[0] * shard_idx
-
-            def fn(out, val):
-                xsource_block, zsigs, cs = val
-                diagonal_block = get_diagonal(zsigs, cs, states_block)
-                return out + apply_xgrp(xsource_block, diagonal_block, in_vec), None
-        
-            out_block = jax.lax.scan(
-                fn,
-                out_block,
-                (xsource_blocks - offset, zsignatures, coeffs)
-            )[0]
-            return out_block
-
-        return jax.lax.fori_loop(
-            0,
-            mesh.size,
-            apply_h_from_shard,
-            jnp.zeros_like(vec_block)
-        )
-
-    return apply_h_x_cached_by_shard
 
 
 # def make_apply_h_x_gathered(shard_bundle: int):
