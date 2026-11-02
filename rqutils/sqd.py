@@ -164,7 +164,7 @@ from numpy.typing import NDArray
 from scipy.sparse import csr_array, coo_array
 import jax
 import jax.numpy as jnp
-from jax.sharding import PartitionSpec, get_abstract_mesh
+from jax.sharding import PartitionSpec as P, NamedSharding, get_abstract_mesh
 from rqutils.paulis.symplectic import PauliSumXZ
 from rqutils.ground_locg import ground_locg
 
@@ -328,7 +328,7 @@ def run_sqd(
     log_level: int = logging.INFO
 ) -> tuple[float] | tuple[float, jax.Array, jax.Array, int]:
     """JIT-compiled part of the SQD function."""
-    pspec = get_pspec()
+    mesh = get_abstract_mesh()
 
     if options is None:
         options = SQDOptions()
@@ -347,12 +347,12 @@ def run_sqd(
             None,
             hamiltonian.x
         )[1]
-        if pspec:
+        if not mesh.empty:
             # We will not be performing sorts on states any more - shard the array
             if log_level <= logging.DEBUG:
                 jax.debug.print(ordered=True)('Sharding states array')
 
-            states_u = jax.reshard(states_u, pspec)
+            states_u = jax.reshard(states_u, P(mesh.axis_names, None))
 
         if options.cache_strategy[0] == 2:
             if (mesh := get_abstract_mesh()).empty:
@@ -399,8 +399,13 @@ def run_sqd(
             matvec = apply_h_xz_cached
             args = (xsources, diagonals)
         case (2, 0):
-            matvec = make_apply_h_x_gathered(options.gather_shard_bundle)
+            matvec = make_apply_h_x_cached_by_shard()
             args = (xsources, hamiltonian.z, hamiltonian.c, states_u)
+
+    if mesh.empty:
+        out_sharding = NamedSharding(mesh, P())
+    else:
+        out_sharding = NamedSharding(mesh, P(mesh.axis_names))
 
     def vinit_from_min_diag():
         if options.cache_strategy[1] == 2:
@@ -409,16 +414,11 @@ def run_sqd(
             diagonal = get_diagonal(hamiltonian.z[0], hamiltonian.c[0], states_u).real
         # Set the fill-in components to the maximum value so that argmin only sees the valid entries
         diagonal = jnp.where(states_u[:, 0] == 255, np.inf, diagonal)
-        imin = jnp.argmin(diagonal)
-        return (
-            jax.lax.broadcasted_iota(imin.dtype, (states_size,), 0, out_sharding=pspec) == imin
-        ).astype(hamiltonian.c.dtype)
+        return jnp.argmin(diagonal)
 
     def vinit_nodiag():
         # TODO: Come up with a way to find a good vinit when there is no diagonal term
-        return (
-            jax.lax.broadcasted_iota(np.int32, (states_size,), 0, out_sharding=pspec) == 0
-        ).astype(hamiltonian.c.dtype)
+        return 0
 
     if log_level <= logging.DEBUG:
         jax.debug.print(ordered=True)('Generating vinit')
@@ -434,12 +434,13 @@ def run_sqd(
                                       options.cache_strategy)
 
     eigval, eigvec, _ = ground_locg(matvec, vinit, args=args, maxiter=options.locg_maxiter,
-                                    tol=options.locg_tol, log_level=log_level)
+                                    tol=options.locg_tol, vspace=(states_size, hamiltonian.c.dtype),
+                                    log_level=log_level)
     result = (eigval,)
     if options.return_eigvec:
-        if pspec:
-            eigvec = jax.reshard(eigvec, PartitionSpec(None))
-            states_u = jax.reshard(states_u, PartitionSpec(None))
+        if not mesh.empty:
+            eigvec = jax.reshard(eigvec, P(None))
+            states_u = jax.reshard(states_u, P(None, None))
         subspace_dim = jnp.searchsorted(states_u[:, 0] >> 7, 1)
         result += (eigvec, states_u, subspace_dim)
     return result
@@ -547,7 +548,7 @@ def get_xsource(
                                          wrap_negative_indices=False)
         )
     if not (mesh := get_abstract_mesh()).empty:
-        xsource = jax.reshard(xsource, PartitionSpec(mesh.axis_names))
+        xsource = jax.reshard(xsource, P(mesh.axis_names))
     return xsource
 
 
@@ -557,13 +558,13 @@ def get_diag_signs(
     states: StateList
 ) -> jax.Array:
     """Return the packed sign bits."""
-    pspec = get_pspec()
+    out_sharding = jax.typeof(states).sharding
 
     def get_signs(carry, zsignature):
         out, ibyte, ibit = carry
         sign_bits = jnp.sum(jnp.bitwise_count(states & zsignature), axis=1, dtype=np.uint8) & 1
         # bits and bytes are counted from the left
-        out = out.at[:, ibyte].add(sign_bits << (7 - ibit), out_sharding=pspec)
+        out = out.at[:, ibyte].add(sign_bits << (7 - ibit), out_sharding=out_sharding)
         ibyte, ibit = jax.lax.cond(
             ibit == 7,
             lambda: (ibyte + 1, 0),
@@ -572,7 +573,7 @@ def get_diag_signs(
         return (out, ibyte, ibit), None
 
     num_bytes = np.ceil(zsignatures.shape[0] / 8).astype(int)
-    init = jnp.zeros((states.shape[0], num_bytes), dtype=np.uint8, out_sharding=pspec)
+    init = jnp.zeros((states.shape[0], num_bytes), dtype=np.uint8, out_sharding=out_sharding)
     return jax.lax.scan(get_signs, (init, 0, 0), zsignatures)[0][0]
 
 
@@ -595,7 +596,9 @@ def compute_diagonal(
         signs = 1. - 2. * signed
         return diagonal + coeff * signs, iterm + 1
 
-    init = jnp.zeros(diag_signs.shape[0], dtype=coeffs.dtype, out_sharding=get_pspec())
+    signs_sharding = jax.typeof(diag_signs).sharding
+    out_sharding = NamedSharding(signs_sharding.mesh, P(signs_sharding.spec[0]))
+    init = jnp.zeros(diag_signs.shape[0], dtype=coeffs.dtype, out_sharding=out_sharding)
     return jax.lax.while_loop(cond_fn, add_diag, (init, 0))[0]
 
 
@@ -619,7 +622,11 @@ def get_diagonal(
         signs = 1. - 2. * signed
         return diagonal + coeff * signs, iterm + 1
 
-    init = jnp.zeros(states.shape[0], dtype=coeffs.dtype, out_sharding=get_pspec())
+    states_sharding = jax.typeof(states).sharding
+    out_sharding = NamedSharding(states_sharding.mesh, P(states_sharding.spec[0]))
+    init = jnp.zeros(states.shape[0], dtype=coeffs.dtype, out_sharding=out_sharding)
+    if (varying_axes := jax.typeof(states).manual_axis_type.varying):
+        init = jax.lax.pcast(init, tuple(varying_axes), to='varying')
     return jax.lax.while_loop(cond_fn, add_diag, (init, 0))[0]
 
 
@@ -631,7 +638,7 @@ def apply_xgrp(
 ) -> jax.Array:
     """Gather vector entries from the source indices and multiply them with diagonals."""
     xvec = vec.at[..., xsource].get(mode='fill', fill_value=0., wrap_negative_indices=False,
-                                    out_sharding=get_pspec())
+                                    out_sharding=jax.typeof(vec).sharding)
     return xvec * diagonal
 
 
@@ -732,46 +739,93 @@ def apply_h_xz_cached(
     )[0]
 
 
-def make_apply_h_x_gathered(shard_bundle: int):
-    mesh_size = get_abstract_mesh().size
-    num_bundles = mesh_size // shard_bundle
+def make_apply_h_x_cached_by_shard():
+    mesh = get_abstract_mesh()
+    axis_names = mesh.axis_names
 
-    def apply_h_x_gathered(
-        vec: NDArray[np.inexact],
-        xsources: NDArray[np.int32],
+    @jax.jit
+    @jax.shard_map(
+        in_specs=(
+            P(axis_names),
+            P(None, axis_names),
+            P(None, None, None),
+            P(None, None),
+            P(axis_names, None)
+        ),
+        out_specs=P(axis_names)
+    )
+    def apply_h_x_cached_by_shard(
+        vec_block: NDArray[np.inexact],
+        xsource_blocks: NDArray[np.int32],
         zsignatures: NDArray[np.uint8],
         coeffs: NDArray[np.inexact],
-        states: StateList
-    ) -> jax.Array:
-        """Return Hv using precomputed xsources and diagonals data."""
-        shard_size = vec.shape[-1] // mesh_size
-        bundle_size = shard_size * shard_bundle
+        states_block: StateList
+    ) -> NDArray[np.inexact]:
+        my_idx = jax.lax.axis_index(axis_names)
 
-        def iter_bundle(ibundle, out):
-            # Stage the bundle on the local device
-            start = bundle_size * ibundle
-            bundle = vec.at[..., jax.ds(start, bundle_size)].get(out_sharding=PartitionSpec(None))
-            # Perform gather and *diagonal
-            return jax.lax.scan(iter_xsig, (out, bundle),
-                                (xsources - start, zsignatures, coeffs))[0][0]
+        def apply_h_from_shard(shard_idx, out_block):
+            in_vec = jax.lax.psum(vec_block * (shard_idx == my_idx), axis_names)
+            offset = vec_block.shape[0] * shard_idx
 
-        def iter_xsig(carry, val):
-            out, bundle = carry
-            xsource, zsigs, cs = val
-            diagonal = get_diagonal(zsigs, cs, states)
-            return (out + apply_xgrp(xsource, diagonal, bundle), bundle), None
+            def fn(out, val):
+                xsource_block, zsigs, cs = val
+                diagonal_block = get_diagonal(zsigs, cs, states_block)
+                return out + apply_xgrp(xsource_block, diagonal_block, in_vec), None
+        
+            out_block = jax.lax.scan(
+                fn,
+                out_block,
+                (xsource_blocks - offset, zsignatures, coeffs)
+            )[0]
+            return out_block
 
         return jax.lax.fori_loop(
             0,
-            num_bundles,
-            iter_bundle,
-            jnp.zeros_like(vec)
+            mesh.size,
+            apply_h_from_shard,
+            jnp.zeros_like(vec_block)
         )
 
-    return apply_h_x_gathered
+    return apply_h_x_cached_by_shard
 
 
-def get_pspec():
-    if (mesh := get_abstract_mesh()).empty:
-        return None
-    return PartitionSpec(mesh.axis_names)
+# def make_apply_h_x_gathered(shard_bundle: int):
+#     mesh = get_abstract_mesh()
+#     num_bundles = mesh.size // shard_bundle
+
+#     @jax.jit(static_argnames=['ibundle'])
+#     def stage_bundle(vec, ibundle):
+#         shard_size = vec.shape[-1] // mesh.size
+#         bundle_size = shard_size * shard_bundle
+#         start = bundle_size * ibundle
+#         # return vec.at[start:start + bundle_size].get(out_sharding=P())
+#         bundle = auto_axes(lambda a: a[start:start + bundle_size], axes=mesh.axis_names,
+#                            out_sharding=P())(vec)
+#         return bundle
+    
+#     @jax.jit
+#     def apply_h_x_gathered(
+#         vec: NDArray[np.inexact],
+#         xsources: NDArray[np.int32],
+#         zsignatures: NDArray[np.uint8],
+#         coeffs: NDArray[np.inexact],
+#         states: StateList
+#     ) -> jax.Array:
+#         """Return Hv using precomputed xsources and diagonals data."""
+#         def iter_xsig(carry, val):
+#             out, bundle = carry
+#             xsource, zsigs, cs = val
+#             diagonal = get_diagonal(zsigs, cs, states)
+#             return (out + apply_xgrp(xsource, diagonal, bundle), bundle), None
+
+#         out = jnp.zeros_like(vec)
+#         for ibundle in range(num_bundles):
+#             bundle = stage_bundle(vec, ibundle)
+#             offset = bundle.shape[0] * ibundle
+#             # Perform gather and *diagonal
+#             out = jax.lax.scan(iter_xsig, (out, bundle),
+#                                (xsources - offset, zsignatures, coeffs))[0][0]
+
+#         return out
+
+#     return apply_h_x_gathered
