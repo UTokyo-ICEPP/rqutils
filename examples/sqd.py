@@ -21,9 +21,11 @@ mpirun python sqd.py 32 --gpus mpi
 ----------------------------------------
 """
 import os
+import time
 import logging
 from argparse import ArgumentParser
 import numpy as np
+import h5py
 import jax
 from jax.sharding import AxisType, Mesh, NamedSharding, PartitionSpec as P
 from jax.experimental.mesh_utils import create_hybrid_device_mesh
@@ -46,9 +48,11 @@ parser.add_argument('--z-cache', type=int, default=0, help='Z cache strategy.')
 parser.add_argument('--shard-bundle', type=int, default=0,
                     help='Number of shards to bundle when caching X sources.')
 parser.add_argument('--maxiter', type=int, default=1000, help='Maxiter parameter of LOCG.')
+parser.add_argument('--seed', type=int, default=12345, help='Random seed.')
 parser.add_argument('--tol', type=float, help='LOCG convergence tolerance.')
 parser.add_argument('--gpus', metavar='LIST',
                     help='Comma-separated list of device IDs (e.g. "0,1,2,3") or "mpi".')
+parser.add_argument('--out', default='sqd.h5', help='Output file name.')
 parser.add_argument('--localmpi', action='store_true')
 options = parser.parse_args()
 
@@ -98,7 +102,7 @@ if options.gpus:
     jax.set_mesh(mesh)
 
 # Initialize a pseudorandom number generator
-rng = np.random.default_rng()
+rng = np.random.default_rng(options.seed)
 
 if options.tfim:
     embedding = np.sort(rng.choice(options.num_qubits, options.tfim, replace=False))
@@ -141,15 +145,39 @@ else:
               for row in rng.choice(4, size=(options.num_paulis, options.num_qubits))]
     coeffs = rng.uniform(-1., 1., size=options.num_paulis)
     
-hamiltonian = PauliSumXZ.from_paulisum(SparsePauliOp(paulis, coeffs))
+hamiltonian = PauliSumXZ.from_paulisum(SparsePauliOp(paulis, coeffs), add_padding=True)
+
+if options.tol is None:
+    options.tol = float(np.finfo(np.float64).eps)
 
 # Run SQD
-options = SQDOptions(
+sqd_options = SQDOptions(
     return_eigvec=False,
+    return_niter=True,
     cache_strategy=(options.x_cache, options.z_cache),
     shard_bundle=options.shard_bundle,
     locg_maxiter=options.maxiter,
     locg_tol=options.tol
 )
-eigval, = run_sqd(hamiltonian, states_p, states_p.shape[0], options=options)
-print(eigval)
+start = time.time()
+eigval, niter = run_sqd(hamiltonian, states_p, states_p.shape[0], options=sqd_options)
+end = time.time()
+print(eigval, niter)
+
+if jax.process_index() == 0:
+    with h5py.File(options.out, 'w') as out:
+        out.attrs['num_qubits'] = options.num_qubits
+        out.attrs['tfim'] = options.tfim
+        out.attrs['hx'] = options.hx
+        out.attrs['num_paulis'] = options.num_paulis
+        out.attrs['subspace_frac'] = options.subspace_frac
+        out.attrs['x_cache'] = options.x_cache
+        out.attrs['z_cache'] = options.z_cache
+        out.attrs['shard_bundle'] = options.shard_bundle
+        out.attrs['maxiter'] = options.maxiter
+        out.attrs['tol'] = options.tol
+        out.attrs['ndev'] = jax.device_count()
+        out.attrs['mpi'] = options.gpus == 'mpi'
+        out.create_dataset('eigval', data=eigval)
+        out.create_dataset('niter', data=niter)
+        out.create_dataset('time', data=end - start)
