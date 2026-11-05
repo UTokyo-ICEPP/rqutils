@@ -184,6 +184,8 @@ type PackedStateList = np.ndarray[tuple[int, int], np.dtype[np.uint8]]
 class SQDOptions:
     return_eigvec: bool = True
     """Whether to return the eigenvector (coefficients and unique state bitstrings)."""
+    return_niter: bool = False
+    """Whether to return the number iterations required for LOCG convergence."""
     cache_strategy: tuple[int, int] = (1, 0)
     """Switches for caching the results of source indices and sign bits / diagonals.
        See the module documentation for the detailed discussion of the resource tradeoff involved."""
@@ -259,11 +261,17 @@ def sqd(
     result = run_sqd(hamiltonian, states_p, states_size, options)
     LOG.info('Found ground eigenpair in %f seconds.', time.time() - start)
     eigval = float(result[0])
+    if not options.return_eigvec and not options.return_niter:
+        return eigval
+
+    retval = (eigval,)
     if options.return_eigvec:
         eigvec, states_u, subspace_dim = result[1:]
         basis_states = np.unpackbits(states_u[:subspace_dim], axis=-1)[:, 1:1 + states.shape[1]]
-        return (eigval, np.array(eigvec[:subspace_dim]), basis_states)
-    return eigval
+        retval += (np.array(eigvec[:subspace_dim]), basis_states)
+    if options.return_niter:
+        retval += (result[-1],)
+    return retval
 
 
 def hproj(
@@ -429,9 +437,10 @@ def run_sqd(
         jax.debug.print(ordered=True)('Starting minimization with cache_strategy {}',
                                       options.cache_strategy)
 
-    eigval, eigvec, _ = ground_locg(matvec, vinit, args=args, maxiter=options.locg_maxiter,
-                                    tol=options.locg_tol, vspace=(states_size, hamiltonian.c.dtype),
-                                    log_level=log_level)
+    eigval, eigvec, niter = ground_locg(matvec, vinit, args=args, maxiter=options.locg_maxiter,
+                                        tol=options.locg_tol,
+                                        vspace=(states_size, hamiltonian.c.dtype),
+                                        log_level=log_level)
     result = (eigval,)
     if options.return_eigvec:
         if mesh.size > 1:
@@ -439,6 +448,8 @@ def run_sqd(
             states_u = jax.reshard(states_u, P(None, None))
         subspace_dim = jnp.searchsorted(states_u[:, 0] >> 7, 1)
         result += (eigvec, states_u, subspace_dim)
+    if options.return_niter:
+        result += (niter,)
     return result
 
 
